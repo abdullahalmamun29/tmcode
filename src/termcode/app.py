@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DirectoryTree, Input, Label, OptionList, RichLog, Static, TextArea
+from textual.widgets import Button, DirectoryTree, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from termcode.modals import (
@@ -43,6 +46,75 @@ from termcode.workspace import (
 )
 
 MAX_OUTPUT_HISTORY_CHARS = 500_000
+MIN_TERMINAL_HEIGHT = 4
+DEFAULT_TERMINAL_HEIGHT = 10
+
+
+def _copy_to_os_clipboard(text: str) -> bool:
+    """Best-effort copy to the native OS clipboard if a clipboard helper is installed."""
+    candidates: list[list[str]]
+    if sys.platform == "darwin":
+        candidates = [["pbcopy"]]
+    elif sys.platform == "win32":
+        candidates = [["clip"]]
+    else:
+        candidates = [
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ]
+    for cmd in candidates:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            subprocess.run(
+                cmd,
+                input=text.encode("utf-8"),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=2,
+            )
+            return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return False
+
+
+class TerminalResizeHandle(Static):
+    """Draggable Terminal header bar — drag vertically with mouse to resize Terminal."""
+
+    def __init__(self, content: str, *, id: str | None = None, markup: bool = False) -> None:
+        super().__init__(content, id=id, markup=markup)
+        self._dragging = False
+        self._start_y = 0
+        self._start_height = DEFAULT_TERMINAL_HEIGHT
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        app = self.app
+        if isinstance(app, TermCodeApp):
+            self._dragging = True
+            self._start_y = event.screen_y
+            self._start_height = app.terminal_height
+            self.capture_mouse()
+            event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        app = self.app
+        if isinstance(app, TermCodeApp):
+            delta = self._start_y - event.screen_y
+            app.set_terminal_height(self._start_height + delta)
+            event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._dragging:
+            self._dragging = False
+            self.release_mouse()
+            event.stop()
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -90,6 +162,9 @@ class TermCodeApp(App[None]):
         Binding("f4", "delete_item", "Delete", show=False, priority=True),
         Binding("f8", "save_file_as", "SaveAs", show=False, priority=True),
         Binding("f9", "toggle_hidden", "Hidden", show=False, priority=True),
+        Binding("ctrl+up", "terminal_grow", "GrowTerm", show=False, priority=True),
+        Binding("ctrl+down", "terminal_shrink", "ShrinkTerm", show=False, priority=True),
+        Binding("f10", "copy_output", "CopyOut", show=False, priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Files", priority=True),
         Binding("ctrl+j", "toggle_terminal", "Terminal", priority=True),
         Binding("ctrl+l", "clear_output", "Clear", show=False, priority=True),
@@ -112,6 +187,7 @@ class TermCodeApp(App[None]):
         self._suppress_dirty: bool = False
         self.runner: AsyncRunner = AsyncRunner()
         self.output_history: str = ""
+        self.terminal_height: int = DEFAULT_TERMINAL_HEIGHT
         self._recent_store: Path | None = recent_store
         self._recent_folders: list[Path] = []
 
@@ -176,13 +252,23 @@ class TermCodeApp(App[None]):
                 )
 
                 with Vertical(id="output-pane"):
-                    yield Static("TERMINAL  ·  Idle", id="output-header", markup=False)
-                    yield RichLog(
+                    with Horizontal(id="output-header-bar"):
+                        yield TerminalResizeHandle(
+                            "TERMINAL  ·  Idle  (drag to resize)",
+                            id="output-header",
+                            markup=False,
+                        )
+                        yield Button("▲", id="term-grow-btn", classes="term-tool-btn")
+                        yield Button("▼", id="term-shrink-btn", classes="term-tool-btn")
+                        yield Button("Copy", id="term-copy-btn", classes="term-tool-btn")
+                        yield Button("Clear", id="term-clear-btn", classes="term-tool-btn")
+                    yield TextArea(
+                        "",
+                        read_only=True,
+                        show_line_numbers=False,
+                        soft_wrap=True,
+                        theme="vscode_dark",
                         id="output-log",
-                        highlight=False,
-                        markup=False,
-                        auto_scroll=True,
-                        max_lines=10000,
                     )
                     yield Input(
                         placeholder="> Type input and press Enter...",
@@ -331,19 +417,31 @@ class TermCodeApp(App[None]):
             return self.active_file
         return None
 
+    def copy_to_clipboard(self, text: str) -> None:
+        super().copy_to_clipboard(text)
+        _copy_to_os_clipboard(text)
+
+    def set_terminal_height(self, height: int) -> None:
+        """Resize the bottom Terminal panel within safe screen bounds."""
+        max_h = max(MIN_TERMINAL_HEIGHT + 2, self.size.height - 9) if self.size.height else 30
+        clamped = max(MIN_TERMINAL_HEIGHT, min(height, max_h))
+        self.terminal_height = clamped
+        out_pane = self.query_one("#output-pane")
+        out_pane.styles.height = clamped
+
     def append_output(self, text: str) -> None:
-        """Append text chunk to the Terminal log and bounded internal history."""
+        """Append text chunk to the selectable Terminal output and bounded history."""
         if not text:
             return
-        self.output_history += text
+        clean = Text.from_ansi(text).plain
+        if not clean:
+            return
+        self.output_history += clean
         if len(self.output_history) > MAX_OUTPUT_HISTORY_CHARS:
             self.output_history = self.output_history[-MAX_OUTPUT_HISTORY_CHARS:]
-        log = self.query_one("#output-log", RichLog)
-        lines = text.splitlines()
-        if not lines and text:
-            lines = [""]
-        for line in lines:
-            log.write(Text.from_ansi(line))
+        log = self.query_one("#output-log", TextArea)
+        log.load_text(self.output_history)
+        log.scroll_end(animate=False)
 
     def load_file(self, path: Path) -> bool:
         """Load a text file into the editor, rejecting binary or oversized files."""
@@ -509,15 +607,27 @@ class TermCodeApp(App[None]):
         if not self._on_main_screen():
             return
         if event.character == "/" or event.key == "slash":
-            if isinstance(self.focused, (TextArea, Input)):
+            focused = self.focused
+            if (isinstance(focused, TextArea) and not focused.read_only) or isinstance(
+                focused, Input
+            ):
                 return
             event.prevent_default()
             event.stop()
             self.action_open_palette()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "sidebar-open-folder-btn":
+        btn_id = event.button.id
+        if btn_id == "sidebar-open-folder-btn":
             self.action_open_folder()
+        elif btn_id == "term-grow-btn":
+            self.action_terminal_grow()
+        elif btn_id == "term-shrink-btn":
+            self.action_terminal_shrink()
+        elif btn_id == "term-copy-btn":
+            self.action_copy_output()
+        elif btn_id == "term-clear-btn":
+            self.action_clear_output()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "start-list" and event.option_id is not None:
@@ -652,7 +762,7 @@ class TermCodeApp(App[None]):
                     f"[Exited {result.exit_code} in {result.duration_seconds:.2f}s]\n"
                 )
         finally:
-            header.update("TERMINAL  ·  Idle")
+            header.update("TERMINAL  ·  Idle  (drag to resize)")
             stdin_input.value = ""
             stdin_input.disabled = True
             stdin_input.display = False
@@ -874,11 +984,38 @@ class TermCodeApp(App[None]):
         state = "shown" if tree.show_hidden else "hidden"
         self.notify(f"Hidden files {state}")
 
+    def action_terminal_grow(self) -> None:
+        if not self._on_main_screen():
+            return
+        out_pane = self.query_one("#output-pane")
+        out_pane.display = True
+        self.set_terminal_height(self.terminal_height + 3)
+
+    def action_terminal_shrink(self) -> None:
+        if not self._on_main_screen():
+            return
+        out_pane = self.query_one("#output-pane")
+        if not out_pane.display:
+            return
+        self.set_terminal_height(self.terminal_height - 3)
+
+    def action_copy_output(self) -> None:
+        if not self._on_main_screen():
+            return
+        log = self.query_one("#output-log", TextArea)
+        text = log.selected_text or self.output_history
+        if not text:
+            self.notify("Terminal output is empty.")
+            return
+        self.copy_to_clipboard(text)
+        label = "selection" if log.selected_text else "terminal output"
+        self.notify(f"Copied {label} to clipboard")
+
     def action_clear_output(self) -> None:
         if not self._on_main_screen():
             return
         self.output_history = ""
-        self.query_one("#output-log", RichLog).clear()
+        self.query_one("#output-log", TextArea).load_text("")
 
     def action_request_quit(self) -> None:
         if not self._on_main_screen():

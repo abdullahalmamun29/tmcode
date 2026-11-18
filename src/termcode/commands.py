@@ -107,6 +107,27 @@ COMMANDS: tuple[CommandSpec, ...] = (
         description="Show or hide hidden dotfiles in Explorer",
     ),
     CommandSpec(
+        command="/terminal-grow",
+        action="terminal_grow",
+        shortcut="Ctrl+Up",
+        binding="ctrl+up",
+        description="Increase Terminal panel height",
+    ),
+    CommandSpec(
+        command="/terminal-shrink",
+        action="terminal_shrink",
+        shortcut="Ctrl+Down",
+        binding="ctrl+down",
+        description="Decrease Terminal panel height",
+    ),
+    CommandSpec(
+        command="/copy-output",
+        action="copy_output",
+        shortcut="F10",
+        binding="f10",
+        description="Copy selected or full Terminal output",
+    ),
+    CommandSpec(
         command="/clear-output",
         action="clear_output",
         shortcut="Ctrl+L",

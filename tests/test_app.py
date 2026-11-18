@@ -409,3 +409,54 @@ async def test_launch_with_no_folder_shows_welcome_and_folder_picker(tmp_path: P
         await pilot.press("ctrl+j")
         await pilot.pause()
         assert out_pane.display is (not before)
+
+
+@pytest.mark.asyncio
+async def test_terminal_resize_selection_copy_and_clear(tmp_path: Path) -> None:
+    app = TermCodeApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+
+        # Resize terminal taller and shorter via keyboard shortcuts and header buttons
+        initial_h = app.terminal_height
+        await pilot.press("ctrl+up")
+        await pilot.pause()
+        assert app.terminal_height > initial_h
+
+        grown_h = app.terminal_height
+        await pilot.press("ctrl+down")
+        await pilot.pause()
+        assert app.terminal_height < grown_h
+
+        await pilot.click("#term-grow-btn")
+        await pilot.pause()
+        assert app.terminal_height > initial_h - 1
+
+        # Output log is a read-only selectable TextArea
+        app.append_output("hello world\nanswer = 42\n")
+        await pilot.pause()
+        out_log = app.query_one("#output-log", TextArea)
+        assert out_log.read_only is True
+        assert "answer = 42" in out_log.text
+
+        # Select text inside terminal output and copy via F10 (/copy-output)
+        out_log.selection = ((1, 0), (1, 11))
+        assert out_log.selected_text == "answer = 42"
+        await pilot.press("f10")
+        await pilot.pause()
+        assert app._clipboard == "answer = 42"
+
+        # Pressing '/' while focused on read-only terminal still opens CommandPaletteModal
+        out_log.focus()
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        assert isinstance(app.screen, CommandPaletteModal)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Clear terminal via header Clear button
+        await pilot.click("#term-clear-btn")
+        await pilot.pause()
+        assert out_log.text == ""
+        assert app.output_history == ""

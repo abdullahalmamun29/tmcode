@@ -197,8 +197,8 @@ Screen {
 
 /* Code Editor */
 #editor {
-    height: 7fr;
-    min-height: 6;
+    height: 1fr;
+    min-height: 5;
     background: #1f1f1f;
     border: none;
     padding: 0;
@@ -215,19 +215,41 @@ Screen {
 
 /* Terminal / Output Panel */
 #output-pane {
-    height: 3fr;
-    min-height: 7;
+    height: 10;
+    min-height: 4;
     background: #181818;
     border-top: solid #2b2b2b;
 }
 
-#output-header {
+#output-header-bar {
     height: 2;
+    background: #181818;
+    border-bottom: solid #242424;
+}
+
+#output-header {
+    width: 1fr;
+    height: 1;
     background: #181818;
     color: #9d9d9d;
     padding: 0 2;
     text-style: bold;
-    border-bottom: solid #242424;
+}
+
+.term-tool-btn {
+    width: auto;
+    min-width: 3;
+    height: 1;
+    background: #181818;
+    color: #858585;
+    border: none;
+    padding: 0 1;
+}
+
+.term-tool-btn:hover,
+.term-tool-btn:focus {
+    background: #2a2d2e;
+    color: #e5e5e5;
 }
 
 #output-log {
@@ -235,7 +257,7 @@ Screen {
     background: #181818;
     color: #cccccc;
     border: none;
-    padding: 0 2;
+    padding: 0 1;
     scrollbar-size: 1 1;
     scrollbar-background: #181818;
     scrollbar-color: #3a3a3a;

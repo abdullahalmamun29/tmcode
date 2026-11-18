@@ -58,6 +58,9 @@ Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the f
 | `/toggle-sidebar` | `Ctrl+B` | Show or hide the Explorer sidebar |
 | `/toggle-terminal` | `Ctrl+J` | Show or hide the bottom Terminal panel |
 | `/toggle-hidden` | `F9` | Show or hide hidden dotfiles in Explorer |
+| `/terminal-grow` | `Ctrl+Up` | Increase Terminal panel height (or drag header bar) |
+| `/terminal-shrink` | `Ctrl+Down` | Decrease Terminal panel height (or drag header bar) |
+| `/copy-output` | `F10` | Copy selected or full Terminal output |
 | `/clear-output` | `Ctrl+L` | Clear the Terminal output |
 | `/quit` | `Ctrl+Q` | Exit TermCode |
 

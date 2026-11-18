@@ -19,6 +19,9 @@ def test_all_spec_commands_present_with_unique_shortcuts() -> None:
         "/toggle-sidebar",
         "/toggle-terminal",
         "/toggle-hidden",
+        "/terminal-grow",
+        "/terminal-shrink",
+        "/copy-output",
         "/clear-output",
         "/quit",
     }
