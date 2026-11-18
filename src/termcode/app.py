@@ -105,7 +105,10 @@ class TermCodeApp(App[None]):
 
     def on_mount(self) -> None:
         if self.active_file is not None:
-            self.load_file(self.active_file)
+            if not self.load_file(self.active_file):
+                self.active_file = None
+                self.selected_path = self.workspace_root
+                self._update_top_bar()
         else:
             self._update_top_bar()
         self.query_one("#editor", TextArea).focus()
@@ -253,23 +256,40 @@ class TermCodeApp(App[None]):
                 dest = target_dir / dest
             dest = dest.resolve()
 
-            editor = self.query_one("#editor", TextArea)
-            try:
-                write_text_file(dest, editor.text)
-            except WorkspaceError as exc:
-                self.notify(str(exc), severity="error")
-                return
+            def _commit_save() -> None:
+                editor = self.query_one("#editor", TextArea)
+                try:
+                    write_text_file(dest, editor.text)
+                except WorkspaceError as exc:
+                    self.notify(str(exc), severity="error")
+                    return
 
-            self.active_file = dest
-            self.selected_path = dest
-            self._saved_content = editor.text
-            self.is_dirty = False
-            self._apply_editor_language(dest)
-            self._update_top_bar()
-            self._refresh_tree()
-            self.notify(f"Saved {dest.name}")
-            if after_save is not None:
-                after_save()
+                self.active_file = dest
+                self.selected_path = dest
+                self._saved_content = editor.text
+                self.is_dirty = False
+                self._apply_editor_language(dest)
+                self._update_top_bar()
+                self._refresh_tree()
+                self.notify(f"Saved {dest.name}")
+                if after_save is not None:
+                    after_save()
+
+            if dest.exists() and (self.active_file is None or dest != self.active_file.resolve()):
+                def _on_overwrite(confirmed: bool | None) -> None:
+                    if confirmed:
+                        _commit_save()
+
+                self.push_screen(
+                    ConfirmModal(
+                        title="Overwrite Existing File?",
+                        message=f"'{dest.name}' already exists. Overwrite it?",
+                        confirm_label="Overwrite",
+                    ),
+                    _on_overwrite,
+                )
+            else:
+                _commit_save()
 
         self.push_screen(
             TextInputModal(
@@ -405,6 +425,8 @@ class TermCodeApp(App[None]):
             stdin_input.value = ""
             stdin_input.disabled = True
             stdin_input.placeholder = "Program input (enabled while running)..."
+            if self._on_main_screen():
+                self.query_one("#editor", TextArea).focus()
 
     def action_stop_run(self) -> None:
         if not self._on_main_screen():

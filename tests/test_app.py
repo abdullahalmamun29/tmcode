@@ -277,3 +277,81 @@ async def test_unsaved_changes_guard_on_quit(tmp_path: Path) -> None:
         await pilot.click("#discard-btn")
         await pilot.pause()
         assert not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_cli_startup_binary_file_resets_active_file_and_cannot_clobber(
+    tmp_path: Path,
+) -> None:
+    raw_bytes = b"\x7fELF\x00\x01\x02\x03binary"
+    blob = tmp_path / "a.out"
+    blob.write_bytes(raw_bytes)
+
+    app = TermCodeApp(tmp_path, initial_file=blob)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        assert app.active_file is None
+
+        app.query_one("#editor", TextArea).text = "new code\n"
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        # Must prompt for filename instead of silently clobbering a.out
+        assert isinstance(app.screen, TextInputModal)
+        assert blob.read_bytes() == raw_bytes
+
+
+@pytest.mark.asyncio
+async def test_save_as_prompts_before_overwriting_existing_file(tmp_path: Path) -> None:
+    existing = tmp_path / "existing.py"
+    existing.write_text("original = 1\n", encoding="utf-8")
+
+    app = TermCodeApp(tmp_path)
+    async with app.run_test(size=(120, 36)) as pilot:
+        app.query_one("#editor", TextArea).text = "replacement = 2\n"
+        await pilot.pause()
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, TextInputModal)
+        app.screen.query_one("#modal-input", Input).value = "existing.py"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Must prompt for overwrite confirmation
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.click("#cancel-btn")
+        await pilot.pause()
+        assert existing.read_text(encoding="utf-8") == "original = 1\n"
+
+        # Now confirm overwrite
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        app.screen.query_one("#modal-input", Input).value = "existing.py"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.click("#confirm-btn")
+        await pilot.pause()
+        assert existing.read_text(encoding="utf-8") == "replacement = 2\n"
+        assert app.active_file == existing.resolve()
+
+
+@pytest.mark.asyncio
+async def test_focus_returns_to_editor_after_interactive_run_finishes(tmp_path: Path) -> None:
+    ask_py = tmp_path / "ask.py"
+    ask_py.write_text('name = input("Name: ")\nprint(f"Hi {name}")\n', encoding="utf-8")
+
+    app = TermCodeApp(tmp_path, initial_file=ask_py)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press("f5")
+        await _wait_until(lambda: "Name:" in app.output_history)
+
+        stdin_input = app.query_one("#stdin-input", Input)
+        stdin_input.focus()
+        stdin_input.value = "Jobayer"
+        await pilot.press("enter")
+        await _wait_until(lambda: "Hi Jobayer" in app.output_history and not app.runner.is_running)
+        await pilot.pause()
+
+        assert app.focused is app.query_one("#editor", TextArea)

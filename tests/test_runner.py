@@ -176,3 +176,81 @@ async def test_compile_error_and_stop_infinite_loop(tmp_path: Path) -> None:
     await runner.stop()
     res2 = await asyncio.wait_for(task, timeout=5.0)
     assert res2.cancelled
+
+
+@pytest.mark.asyncio
+async def test_task_cancellation_terminates_child_process(tmp_path: Path) -> None:
+    import os
+
+    pid_file = tmp_path / "child.pid"
+    script = tmp_path / "sleeper.py"
+    script.write_text(
+        f"import os, time\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        f"print('ready', flush=True)\n"
+        f"while True:\n"
+        f"    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    runner = AsyncRunner()
+    ready = asyncio.Event()
+
+    def on_out(text: str) -> None:
+        if "ready" in text:
+            ready.set()
+
+    task = asyncio.create_task(runner.run(script, tmp_path, on_out))
+    await asyncio.wait_for(ready.wait(), timeout=5.0)
+    child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Give OS a brief moment to reap the terminated child
+    for _ in range(20):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+
+
+@pytest.mark.asyncio
+async def test_posix_pty_removes_reader_on_eof_no_spin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX PTY test")
+
+    # Child closes stdio fds immediately (triggering PTY EIO) while staying alive briefly
+    script = tmp_path / "close_stdio.py"
+    script.write_text(
+        "import os, time\n"
+        "print('bye', flush=True)\n"
+        "os.close(0); os.close(1); os.close(2)\n"
+        "time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    read_calls = 0
+    real_read = os.read
+
+    def counting_read(fd: int, n: int) -> bytes:
+        nonlocal read_calls
+        read_calls += 1
+        return real_read(fd, n)
+
+    monkeypatch.setattr("termcode.runner.os.read", counting_read)
+
+    runner = AsyncRunner()
+    chunks: list[str] = []
+    res = await runner.run(script, tmp_path, chunks.append)
+    assert res.exit_code == 0
+    assert "bye" in "".join(chunks)
+    assert read_calls < 50, f"PTY reader busy-spun with {read_calls} os.read calls"

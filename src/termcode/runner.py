@@ -6,7 +6,6 @@ import asyncio
 import codecs
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-import errno
 from enum import Enum
 import os
 from pathlib import Path
@@ -300,6 +299,10 @@ class AsyncRunner:
                     cancelled=self._cancelled,
                     compile_failed=False,
                 )
+        except asyncio.CancelledError:
+            self._cancelled = True
+            await self.stop()
+            raise
         finally:
             self._proc = None
             self._master_fd = None
@@ -377,14 +380,19 @@ class AsyncRunner:
                         chunk = os.read(master_fd, 4096)
                     except BlockingIOError:
                         return
-                    except OSError as exc:
-                        if exc.errno == errno.EIO:
-                            eof_event.set()
-                            return
+                    except OSError:
                         eof_event.set()
+                        try:
+                            loop.remove_reader(master_fd)
+                        except Exception:
+                            pass
                         return
                     if not chunk:
                         eof_event.set()
+                        try:
+                            loop.remove_reader(master_fd)
+                        except Exception:
+                            pass
                         return
                     decoded = decoder.decode(chunk).replace("\r\n", "\n")
                     if decoded:
