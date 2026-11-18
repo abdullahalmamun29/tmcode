@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
+
+try:
+    from platformdirs import user_config_dir
+except ImportError:  # pragma: no cover
+    user_config_dir = None  # type: ignore[assignment]
 
 MAX_FILE_BYTES: int = 2 * 1024 * 1024  # 2 MB
 IGNORED_DIRS: frozenset[str] = frozenset(
@@ -161,3 +167,58 @@ def list_workspace_files(root: Path, limit: int = 2000) -> list[Path]:
             if len(results) >= limit:
                 return results
     return results
+
+
+def default_recent_store() -> Path:
+    """Return cross-OS path for TermCode's recent folders JSON file."""
+    if user_config_dir is not None:
+        return Path(user_config_dir("termcode")) / "recent.json"
+    return Path.home() / ".config" / "termcode" / "recent.json"
+
+
+def load_recent_folders(
+    *, store_path: Path | None = None, limit: int = 6
+) -> list[Path]:
+    """Load existing recently opened workspace folders, newest first."""
+    store = store_path or default_recent_store()
+    if not store.is_file():
+        return []
+    try:
+        raw = json.loads(store.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+
+    folders: list[Path] = []
+    seen: set[Path] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        p = Path(item)
+        if p.is_dir():
+            resolved = p.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                folders.append(resolved)
+                if len(folders) >= limit:
+                    break
+    return folders
+
+
+def record_recent_folder(
+    folder: Path, *, store_path: Path | None = None, limit: int = 6
+) -> None:
+    """Record folder at the front of the recent folders list."""
+    store = store_path or default_recent_store()
+    resolved = folder.resolve()
+    existing = [p for p in load_recent_folders(store_path=store, limit=limit) if p != resolved]
+    updated = [resolved, *existing][:limit]
+    try:
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps([str(p) for p in updated], indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass

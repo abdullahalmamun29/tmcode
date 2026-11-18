@@ -12,6 +12,7 @@ from termcode.modals import (
     CommandPaletteModal,
     ConfirmModal,
     FilePickerModal,
+    FolderPickerModal,
     TextInputModal,
     UnsavedChangesModal,
 )
@@ -30,8 +31,13 @@ def test_parse_cli_target(tmp_path: Path) -> None:
     f = tmp_path / "demo.py"
     f.write_text("print(1)\n", encoding="utf-8")
 
+    # Plain `termcode` opens with NO folder (VS Code Welcome screen)
     root, initial = parse_cli_target(None, cwd=tmp_path)
-    assert root == tmp_path.resolve() and initial is None
+    assert root is None and initial is None
+
+    # `termcode .` opens current directory
+    root_dot, initial_dot = parse_cli_target(".", cwd=tmp_path)
+    assert root_dot == tmp_path.resolve() and initial_dot is None
 
     root2, initial2 = parse_cli_target(str(tmp_path))
     assert root2 == tmp_path.resolve() and initial2 is None
@@ -244,12 +250,12 @@ async def test_open_file_open_folder_sidebar_clear_and_binary_guard(tmp_path: Pa
         await pilot.pause()
         assert app.output_history == ""
 
-        # Switch workspace folder via Ctrl+O
+        # Switch workspace folder via Ctrl+O (FolderPickerModal)
         await pilot.press("ctrl+o")
         await pilot.pause()
-        assert isinstance(app.screen, TextInputModal)
-        app.screen.query_one("#modal-input", Input).value = str(ws2)
-        await pilot.press("enter")
+        assert isinstance(app.screen, FolderPickerModal)
+        app.screen.query_one("#folder-path-input", Input).value = str(ws2)
+        await pilot.click("#open-folder-btn")
         await pilot.pause()
         assert app.workspace_root == ws2.resolve()
 
@@ -355,3 +361,51 @@ async def test_focus_returns_to_editor_after_interactive_run_finishes(tmp_path: 
         await pilot.pause()
 
         assert app.focused is app.query_one("#editor", TextArea)
+
+
+@pytest.mark.asyncio
+async def test_launch_with_no_folder_shows_welcome_and_folder_picker(tmp_path: Path) -> None:
+    proj = tmp_path / "my_project"
+    proj.mkdir()
+    (proj / ".hidden_dir").mkdir()
+    (proj / "__pycache__").mkdir()
+    (proj / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    app = TermCodeApp(workspace_root=None, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        assert app.workspace_root is None
+        assert app.query_one("#welcome-view").display is True
+        assert app.query_one("#no-folder-box").display is True
+        assert app.query_one("#file-tree").display is False
+        assert app.query_one("#stdin-input").display is False
+
+        # Open Folder via Ctrl+O interactive folder picker
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert isinstance(app.screen, FolderPickerModal)
+        app.screen.query_one("#folder-path-input", Input).value = str(proj)
+        await pilot.click("#open-folder-btn")
+        await pilot.pause()
+
+        assert app.workspace_root == proj.resolve()
+        assert app.query_one("#no-folder-box").display is False
+        assert app.query_one("#file-tree").display is True
+
+        # FilteredDirectoryTree hides dotfiles and __pycache__ by default
+        tree = app.query_one("#file-tree")
+        visible = [p.name for p in tree.filter_paths(list(proj.iterdir()))]
+        assert visible == ["app.py"]
+
+        # Toggle hidden files via F9
+        await pilot.press("f9")
+        await pilot.pause()
+        visible_all = sorted(p.name for p in tree.filter_paths(list(proj.iterdir())))
+        assert ".hidden_dir" in visible_all
+
+        # Toggle terminal panel via Ctrl+J
+        out_pane = app.query_one("#output-pane")
+        before = out_pane.display
+        await pilot.press("ctrl+j")
+        await pilot.pause()
+        assert out_pane.display is (not before)

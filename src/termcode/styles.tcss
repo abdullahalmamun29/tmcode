@@ -1,123 +1,362 @@
-Screen {
-    background: #1e1e1e;
-    color: #d4d4d4;
-}
+/* VS Code Dark Modern inspired styling for TermCode */
 
-#top-bar {
-    dock: top;
-    height: 1;
-    background: #007acc;
-    color: #ffffff;
-    padding: 0 1;
-    text-style: bold;
+Screen {
+    background: #1f1f1f;
+    color: #cccccc;
 }
 
 #workspace-body {
     height: 1fr;
 }
 
+/* Explorer Sidebar */
 #sidebar {
     width: 28;
-    min-width: 18;
-    max-width: 45;
-    border-right: solid #3c3c3c;
-    background: #252526;
+    min-width: 20;
+    max-width: 42;
+    background: #181818;
+    border-right: solid #2b2b2b;
 }
 
-#sidebar-header {
-    height: 1;
-    background: #2d2d30;
-    color: #cccccc;
-    padding: 0 1;
+#sidebar-title {
+    height: 2;
+    background: #181818;
+    color: #858585;
+    padding: 1 2 0 2;
     text-style: bold;
+}
+
+#sidebar-folder {
+    height: 2;
+    background: #181818;
+    color: #cccccc;
+    padding: 0 2;
+    text-style: bold;
+    border-bottom: solid #2b2b2b;
+}
+
+#no-folder-box {
+    height: 1fr;
+    padding: 1 2;
+    background: #181818;
+}
+
+#no-folder-text {
+    color: #9d9d9d;
+    margin-bottom: 1;
+}
+
+#sidebar-open-folder-btn {
+    width: 100%;
+    height: 3;
+    background: #0078d4;
+    color: #ffffff;
+    border: none;
+    content-align: center middle;
+    margin-bottom: 1;
+}
+
+#sidebar-open-folder-btn:hover,
+#sidebar-open-folder-btn:focus {
+    background: #1a86d9;
+    text-style: bold;
+}
+
+#no-folder-hint {
+    color: #6e7681;
 }
 
 #file-tree {
     height: 1fr;
-    background: #252526;
+    background: #181818;
+    color: #cccccc;
+    border: none;
+    padding: 0 1;
     scrollbar-size: 1 1;
+    scrollbar-background: #181818;
+    scrollbar-color: #3a3a3a;
+    scrollbar-color-hover: #525252;
+    scrollbar-color-active: #686868;
 }
 
+#file-tree:focus {
+    border: none;
+}
+
+/* Main Column */
 #main-pane {
     width: 1fr;
     height: 1fr;
+    background: #1f1f1f;
 }
 
+#tab-bar {
+    height: 2;
+    background: #181818;
+    border-bottom: solid #2b2b2b;
+}
+
+#active-tab {
+    width: auto;
+    height: 1;
+    background: #1f1f1f;
+    color: #e5e5e5;
+    padding: 0 2;
+    text-style: bold;
+}
+
+#tab-meta {
+    width: 1fr;
+    height: 1;
+    background: #181818;
+    color: #6e7681;
+    padding: 0 2;
+    text-align: right;
+}
+
+/* Welcome View (No Folder Open) */
+#welcome-view {
+    height: 1fr;
+    background: #1f1f1f;
+    align: center middle;
+    padding: 2 4;
+}
+
+#welcome-card {
+    width: 74;
+    max-width: 94%;
+    height: auto;
+    background: #1f1f1f;
+    padding: 1 2;
+}
+
+#welcome-title {
+    color: #e5e5e5;
+    text-style: bold;
+    margin-bottom: 0;
+}
+
+#welcome-subtitle {
+    color: #858585;
+    margin-bottom: 2;
+}
+
+#welcome-columns {
+    height: auto;
+}
+
+#welcome-start {
+    width: 34;
+    height: auto;
+    padding-right: 4;
+}
+
+#welcome-recent {
+    width: 1fr;
+    height: auto;
+}
+
+.welcome-section-title {
+    color: #cccccc;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#start-list {
+    height: auto;
+    background: #1f1f1f;
+    border: none;
+    padding: 0;
+    color: #3794ff;
+}
+
+#start-list:focus {
+    border: none;
+}
+
+#recent-list {
+    height: auto;
+    max-height: 8;
+    background: #1f1f1f;
+    border: none;
+    padding: 0;
+}
+
+#recent-list:focus {
+    border: none;
+}
+
+#recent-empty {
+    color: #6e7681;
+}
+
+#welcome-tip {
+    color: #6e7681;
+    margin-top: 2;
+}
+
+/* Code Editor */
 #editor {
     height: 7fr;
     min-height: 6;
-    border-bottom: solid #3c3c3c;
+    background: #1f1f1f;
+    border: none;
+    padding: 0;
+    scrollbar-size: 1 1;
+    scrollbar-background: #1f1f1f;
+    scrollbar-color: #3a3a3a;
+    scrollbar-color-hover: #525252;
+    scrollbar-color-active: #686868;
 }
 
+#editor:focus {
+    border: none;
+}
+
+/* Terminal / Output Panel */
 #output-pane {
     height: 3fr;
-    min-height: 6;
+    min-height: 7;
     background: #181818;
+    border-top: solid #2b2b2b;
 }
 
 #output-header {
-    height: 1;
-    background: #2d2d30;
-    color: #cccccc;
-    padding: 0 1;
+    height: 2;
+    background: #181818;
+    color: #9d9d9d;
+    padding: 0 2;
     text-style: bold;
+    border-bottom: solid #242424;
 }
 
 #output-log {
     height: 1fr;
     background: #181818;
-    padding: 0 1;
+    color: #cccccc;
+    border: none;
+    padding: 0 2;
     scrollbar-size: 1 1;
+    scrollbar-background: #181818;
+    scrollbar-color: #3a3a3a;
+    scrollbar-color-hover: #525252;
+    scrollbar-color-active: #686868;
+}
+
+#output-log:focus {
+    border: none;
 }
 
 #stdin-input {
-    height: 3;
-    border: tall #3c3c3c;
-    background: #1f1f1f;
+    height: 1;
+    border: none;
+    background: #252526;
+    color: #e5e5e5;
+    padding: 0 2;
 }
 
-#stdin-input:disabled {
-    opacity: 0.45;
+#stdin-input:focus {
+    border: none;
+    background: #2a2d2e;
 }
 
-/* Modal styling */
+/* Bottom VS Code Status Bar */
+#status-bar {
+    dock: bottom;
+    height: 2;
+    background: #181818;
+    border-top: solid #2b2b2b;
+    color: #9d9d9d;
+}
+
+#status-left {
+    width: 1fr;
+    height: 1;
+    padding: 0 2;
+    color: #9d9d9d;
+}
+
+#status-right {
+    width: auto;
+    height: 1;
+    padding: 0 2;
+    color: #9d9d9d;
+}
+
+/* Modal Dialogs */
 CommandPaletteModal,
 TextInputModal,
 FilePickerModal,
+FolderPickerModal,
 ConfirmModal,
 UnsavedChangesModal {
     align: center middle;
-    background: rgba(0, 0, 0, 0.65);
+    background: rgba(0, 0, 0, 0.55);
 }
 
 .modal-box {
-    width: 76;
+    width: 74;
     max-width: 92%;
     height: auto;
-    max-height: 85%;
-    background: #252526;
-    border: round #007acc;
+    max-height: 84%;
+    background: #222222;
+    border: solid #3c3c3c;
     padding: 1 2;
 }
 
 .modal-title {
     text-style: bold;
-    color: #ffffff;
+    color: #e5e5e5;
     margin-bottom: 1;
 }
 
 .modal-subtitle {
-    color: #bbbbbb;
+    color: #9d9d9d;
     margin-bottom: 1;
 }
 
-#palette-list,
-#picker-list {
-    height: 14;
-    max-height: 18;
-    margin-top: 1;
+.modal-box Input {
+    background: #181818;
     border: solid #3c3c3c;
-    background: #1e1e1e;
+    color: #e5e5e5;
+}
+
+.modal-box Input:focus {
+    border: solid #0078d4;
+}
+
+.quick-bar {
+    height: auto;
+    margin-top: 1;
+}
+
+.quick-btn {
+    height: 1;
+    min-width: 6;
+    background: #2b2b2b;
+    color: #cccccc;
+    border: none;
+    margin-right: 1;
+    padding: 0 1;
+}
+
+.quick-btn:hover,
+.quick-btn:focus {
+    background: #37373d;
+    color: #ffffff;
+}
+
+#palette-list,
+#picker-list,
+#folder-list {
+    height: 13;
+    max-height: 17;
+    margin-top: 1;
+    border: solid #2b2b2b;
+    background: #181818;
+    scrollbar-size: 1 1;
+    scrollbar-background: #181818;
+    scrollbar-color: #3a3a3a;
 }
 
 .modal-buttons {
@@ -128,4 +367,29 @@ UnsavedChangesModal {
 
 .modal-buttons Button {
     margin-left: 1;
+    height: 1;
+    padding: 0 2;
+    border: none;
+    background: #333333;
+    color: #e5e5e5;
+}
+
+.modal-buttons Button:hover,
+.modal-buttons Button:focus {
+    background: #424242;
+}
+
+.modal-buttons Button.-primary {
+    background: #0078d4;
+    color: #ffffff;
+}
+
+.modal-buttons Button.-primary:hover,
+.modal-buttons Button.-primary:focus {
+    background: #1a86d9;
+}
+
+.modal-buttons Button.-error {
+    background: #a1260d;
+    color: #ffffff;
 }

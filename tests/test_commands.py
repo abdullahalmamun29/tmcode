@@ -17,6 +17,8 @@ def test_all_spec_commands_present_with_unique_shortcuts() -> None:
         "/rename",
         "/delete",
         "/toggle-sidebar",
+        "/toggle-terminal",
+        "/toggle-hidden",
         "/clear-output",
         "/quit",
     }

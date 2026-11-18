@@ -33,30 +33,32 @@ python -m venv .venv
 ## Usage
 
 ```bash
-termcode                  # Open current directory
-termcode .                # Open current directory
+termcode                  # Start on Welcome screen (no folder opened — pick or choose recent)
+termcode .                # Open current directory directly
 termcode path/to/project  # Open a specific folder
 termcode path/to/main.py  # Open a specific file and its folder
 ```
 
 ## `/` Command Menu & Shortcuts
 
-Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the file tree or output panel.
+Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the file tree or terminal log.
 
 | Command | Shortcut | Action |
 |---|---|---|
-| `/run` | `F5` | Save and run active file in Output panel |
+| `/run` | `F5` | Save and run active file in Terminal panel |
 | `/stop` | `F7` | Stop currently running program |
 | `/save` | `Ctrl+S` | Save active file |
 | `/save-as` | `F8` | Save current buffer under a new name |
 | `/new-file` | `Ctrl+N` | Create a new file in the selected folder |
 | `/new-folder` | `F3` | Create a new folder in the selected folder |
 | `/open-file` | `Ctrl+P` | Quick-select and open a file in this folder |
-| `/open-folder` | `Ctrl+O` | Switch to another folder as workspace root |
+| `/open-folder` | `Ctrl+O` | Browse & open another folder as workspace root |
 | `/rename` | `F2` | Rename selected file or folder |
 | `/delete` | `F4` | Delete selected file or folder (with confirmation) |
-| `/toggle-sidebar` | `Ctrl+B` | Show or hide the file explorer sidebar |
-| `/clear-output` | `Ctrl+L` | Clear the Output panel |
+| `/toggle-sidebar` | `Ctrl+B` | Show or hide the Explorer sidebar |
+| `/toggle-terminal` | `Ctrl+J` | Show or hide the bottom Terminal panel |
+| `/toggle-hidden` | `F9` | Show or hide hidden dotfiles in Explorer |
+| `/clear-output` | `Ctrl+L` | Clear the Terminal output |
 | `/quit` | `Ctrl+Q` | Exit TermCode |
 
 ## Running Tests

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from rich.text import Text
@@ -10,12 +10,14 @@ from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DirectoryTree, Footer, Input, Label, RichLog, Static, TextArea
+from textual.widgets import Button, DirectoryTree, Input, Label, OptionList, RichLog, Static, TextArea
+from textual.widgets.option_list import Option
 
 from termcode.modals import (
     CommandPaletteModal,
     ConfirmModal,
     FilePickerModal,
+    FolderPickerModal,
     TextInputModal,
     UnsavedChangesModal,
 )
@@ -27,15 +29,20 @@ from termcode.runner import (
     language_label_for_path,
 )
 from termcode.workspace import (
+    IGNORED_DIRS,
     WorkspaceError,
     create_file,
     create_folder,
     delete_path,
     list_workspace_files,
+    load_recent_folders,
     read_text_file,
+    record_recent_folder,
     rename_path,
     write_text_file,
 )
+
+MAX_OUTPUT_HISTORY_CHARS = 500_000
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -46,11 +53,29 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
+class FilteredDirectoryTree(DirectoryTree):
+    """DirectoryTree that hides dotfiles and noisy build/cache folders by default."""
+
+    def __init__(self, path: str | Path, *, show_hidden: bool = False, id: str | None = None) -> None:
+        super().__init__(path, id=id)
+        self.show_hidden = show_hidden
+
+    def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
+        if self.show_hidden:
+            return paths
+        return [
+            p
+            for p in paths
+            if not p.name.startswith(".") and p.name not in IGNORED_DIRS
+        ]
+
+
 class TermCodeApp(App[None]):
     """Lightweight VS Code-style terminal editor and runner for Python, C, and C++."""
 
     CSS_PATH = "styles.tcss"
     TITLE = "TermCode"
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         Binding("ctrl+k", "open_palette", "/Menu", priority=True),
@@ -64,14 +89,22 @@ class TermCodeApp(App[None]):
         Binding("f2", "rename_item", "Rename", priority=True),
         Binding("f4", "delete_item", "Delete", show=False, priority=True),
         Binding("f8", "save_file_as", "SaveAs", show=False, priority=True),
+        Binding("f9", "toggle_hidden", "Hidden", show=False, priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Files", priority=True),
+        Binding("ctrl+j", "toggle_terminal", "Terminal", priority=True),
         Binding("ctrl+l", "clear_output", "Clear", show=False, priority=True),
         Binding("ctrl+q", "request_quit", "Quit", priority=True),
     ]
 
-    def __init__(self, workspace_root: Path, initial_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        workspace_root: Path | None = None,
+        initial_file: Path | None = None,
+        *,
+        recent_store: Path | None = None,
+    ) -> None:
         super().__init__()
-        self.workspace_root: Path = workspace_root.resolve()
+        self.workspace_root: Path | None = workspace_root.resolve() if workspace_root else None
         self.active_file: Path | None = initial_file.resolve() if initial_file else None
         self.selected_path: Path | None = self.active_file or self.workspace_root
         self.is_dirty: bool = False
@@ -79,42 +112,144 @@ class TermCodeApp(App[None]):
         self._suppress_dirty: bool = False
         self.runner: AsyncRunner = AsyncRunner()
         self.output_history: str = ""
+        self._recent_store: Path | None = recent_store
+        self._recent_folders: list[Path] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="top-bar")
+        initial_tree_root = self.workspace_root or Path.home()
         with Horizontal(id="workspace-body"):
             with Vertical(id="sidebar"):
-                yield Label("FILES  (press / for menu)", id="sidebar-header")
-                yield DirectoryTree(str(self.workspace_root), id="file-tree")
+                yield Static("EXPLORER", id="sidebar-title", markup=False)
+                yield Static("", id="sidebar-folder", markup=False)
+                with Vertical(id="no-folder-box"):
+                    yield Static(
+                        "You have not yet opened a folder.",
+                        id="no-folder-text",
+                        markup=False,
+                    )
+                    yield Button("Open Folder", id="sidebar-open-folder-btn")
+                    yield Static("Press Ctrl+O anytime", id="no-folder-hint", markup=False)
+                yield FilteredDirectoryTree(str(initial_tree_root), id="file-tree")
+
             with Vertical(id="main-pane"):
+                with Horizontal(id="tab-bar"):
+                    yield Static("Welcome", id="active-tab", markup=False)
+                    yield Static("", id="tab-meta", markup=False)
+
+                with Vertical(id="welcome-view"):
+                    with Vertical(id="welcome-card"):
+                        yield Static("TermCode", id="welcome-title", markup=False)
+                        yield Static(
+                            "Lightweight terminal editor for Python, C & C++",
+                            id="welcome-subtitle",
+                            markup=False,
+                        )
+                        with Horizontal(id="welcome-columns"):
+                            with Vertical(id="welcome-start"):
+                                yield Static("Start", classes="welcome-section-title", markup=False)
+                                yield OptionList(
+                                    Option("Open Folder...     Ctrl+O", id="open_folder"),
+                                    Option("New File...        Ctrl+N", id="new_file"),
+                                    Option("Command Menu       Ctrl+K", id="open_palette"),
+                                    id="start-list",
+                                )
+                            with Vertical(id="welcome-recent"):
+                                yield Static("Recent", classes="welcome-section-title", markup=False)
+                                yield OptionList(id="recent-list")
+                                yield Static(
+                                    "No recent folders yet",
+                                    id="recent-empty",
+                                    markup=False,
+                                )
+                        yield Static(
+                            "Tip: run 'termcode .' from any terminal to open the current folder directly.",
+                            id="welcome-tip",
+                            markup=False,
+                        )
+
                 yield TextArea.code_editor(
                     "",
                     language=None,
+                    theme="vscode_dark",
                     show_line_numbers=True,
                     id="editor",
                 )
+
                 with Vertical(id="output-pane"):
-                    yield Static("OUTPUT [Idle]", id="output-header")
-                    yield RichLog(id="output-log", highlight=False, markup=False, auto_scroll=True)
+                    yield Static("TERMINAL  ·  Idle", id="output-header", markup=False)
+                    yield RichLog(
+                        id="output-log",
+                        highlight=False,
+                        markup=False,
+                        auto_scroll=True,
+                        max_lines=10000,
+                    )
                     yield Input(
-                        placeholder="Program input (enabled while running)...",
+                        placeholder="> Type input and press Enter...",
                         disabled=True,
                         id="stdin-input",
                     )
-        yield Footer()
+
+        with Horizontal(id="status-bar"):
+            yield Static("", id="status-left", markup=False)
+            yield Static("", id="status-right", markup=False)
 
     def on_mount(self) -> None:
-        if self.active_file is not None:
-            if not self.load_file(self.active_file):
-                self.active_file = None
-                self.selected_path = self.workspace_root
-                self._update_top_bar()
+        self.query_one("#stdin-input", Input).display = False
+        self._refresh_recent_list()
+
+        if self.workspace_root is not None:
+            record_recent_folder(self.workspace_root, store_path=self._recent_store)
+            self._sync_workspace_ui(show_welcome=False)
+            if self.active_file is not None:
+                if not self.load_file(self.active_file):
+                    self.active_file = None
+                    self.selected_path = self.workspace_root
+                    self._update_chrome()
+            else:
+                self._update_chrome()
+                self.query_one("#editor", TextArea).focus()
         else:
-            self._update_top_bar()
-        self.query_one("#editor", TextArea).focus()
+            self._sync_workspace_ui(show_welcome=True)
+            self._update_chrome()
+            start_list = self.query_one("#start-list", OptionList)
+            start_list.highlighted = 0
+            start_list.focus()
 
     def _on_main_screen(self) -> bool:
         return len(self.screen_stack) == 1
+
+    def _sync_workspace_ui(self, *, show_welcome: bool) -> None:
+        has_folder = self.workspace_root is not None
+        self.query_one("#no-folder-box").display = not has_folder
+        self.query_one("#file-tree").display = has_folder
+        folder_label = self.query_one("#sidebar-folder", Static)
+        folder_label.display = has_folder
+        if self.workspace_root is not None:
+            folder_label.update(self.workspace_root.name.upper())
+
+        self.query_one("#welcome-view").display = show_welcome
+        self.query_one("#editor").display = not show_welcome
+        self.query_one("#output-pane").display = not show_welcome
+
+    def _refresh_recent_list(self) -> None:
+        self._recent_folders = load_recent_folders(store_path=self._recent_store)
+        recent_list = self.query_one("#recent-list", OptionList)
+        empty_label = self.query_one("#recent-empty", Static)
+        recent_list.clear_options()
+        if not self._recent_folders:
+            recent_list.display = False
+            empty_label.display = True
+            return
+        recent_list.display = True
+        empty_label.display = False
+        home = Path.home()
+        for idx, folder in enumerate(self._recent_folders):
+            try:
+                display_path = "~/" + folder.relative_to(home).as_posix()
+            except ValueError:
+                display_path = str(folder)
+            recent_list.add_option(Option(f"{folder.name}  ({display_path})", id=str(idx)))
 
     def _apply_editor_language(self, path: Path | None) -> None:
         editor = self.query_one("#editor", TextArea)
@@ -124,21 +259,50 @@ class TermCodeApp(App[None]):
         else:
             editor.language = None
 
-    def _update_top_bar(self) -> None:
-        bar = self.query_one("#top-bar", Static)
-        if self.active_file is not None:
-            try:
-                rel = self.active_file.relative_to(self.workspace_root).as_posix()
-            except ValueError:
-                rel = self.active_file.name
+    def _update_chrome(self) -> None:
+        tab = self.query_one("#active-tab", Static)
+        meta = self.query_one("#tab-meta", Static)
+        status_left = self.query_one("#status-left", Static)
+        status_right = self.query_one("#status-right", Static)
+        editor = self.query_one("#editor", TextArea)
+        on_welcome = self.query_one("#welcome-view").display
+
+        if on_welcome:
+            tab.update("Welcome")
+            meta.update("No Folder Opened" if self.workspace_root is None else str(self.workspace_root))
         else:
-            rel = "Untitled"
-        lang_label = language_label_for_path(self.active_file)
-        dirty_mark = " *" if self.is_dirty else ""
-        bar.update(f"TermCode  |  {self.workspace_root}  |  {rel} [{lang_label}]{dirty_mark}")
+            if self.active_file is not None:
+                title = self.active_file.name
+                if self.workspace_root is not None:
+                    try:
+                        rel = self.active_file.relative_to(self.workspace_root).as_posix()
+                    except ValueError:
+                        rel = str(self.active_file)
+                else:
+                    rel = str(self.active_file)
+            else:
+                title = "Untitled"
+                rel = str(self.workspace_root) if self.workspace_root else "Not saved"
+            dirty_dot = " ●" if self.is_dirty else ""
+            tab.update(f"{title}{dirty_dot}")
+            meta.update(rel)
+
+        folder_part = self.workspace_root.name if self.workspace_root else "No Folder"
+        status_left.update(
+            f"{folder_part}  ·  ^K Menu  ·  F5 Run  ·  ^S Save  ·  ^O Folder  ·  ^J Terminal"
+        )
+
+        row, col = editor.cursor_location
+        lang_label = language_label_for_path(self.active_file) if not on_welcome else "Welcome"
+        if on_welcome:
+            status_right.update("TermCode")
+        else:
+            status_right.update(f"Ln {row + 1}, Col {col + 1}  ·  UTF-8  ·  {lang_label}")
 
     def _refresh_tree(self) -> None:
-        tree = self.query_one("#file-tree", DirectoryTree)
+        if self.workspace_root is None:
+            return
+        tree = self.query_one("#file-tree", FilteredDirectoryTree)
         tree.path = self.workspace_root
         tree.reload()
 
@@ -149,13 +313,18 @@ class TermCodeApp(App[None]):
             return self.selected_path.parent
         if self.active_file is not None and self.active_file.parent.exists():
             return self.active_file.parent
-        return self.workspace_root
+        if self.workspace_root is not None:
+            return self.workspace_root
+        return Path.cwd()
 
     def _target_path_for_edit(self) -> Path | None:
         if (
             self.selected_path is not None
             and self.selected_path.exists()
-            and self.selected_path.resolve() != self.workspace_root.resolve()
+            and (
+                self.workspace_root is None
+                or self.selected_path.resolve() != self.workspace_root.resolve()
+            )
         ):
             return self.selected_path
         if self.active_file is not None and self.active_file.exists():
@@ -163,10 +332,12 @@ class TermCodeApp(App[None]):
         return None
 
     def append_output(self, text: str) -> None:
-        """Append text chunk to the Output panel log and internal history."""
+        """Append text chunk to the Terminal log and bounded internal history."""
         if not text:
             return
         self.output_history += text
+        if len(self.output_history) > MAX_OUTPUT_HISTORY_CHARS:
+            self.output_history = self.output_history[-MAX_OUTPUT_HISTORY_CHARS:]
         log = self.query_one("#output-log", RichLog)
         lines = text.splitlines()
         if not lines and text:
@@ -183,6 +354,7 @@ class TermCodeApp(App[None]):
             self.notify(str(exc), severity="error")
             return False
 
+        self._sync_workspace_ui(show_welcome=False)
         editor = self.query_one("#editor", TextArea)
         self._suppress_dirty = True
         try:
@@ -195,9 +367,38 @@ class TermCodeApp(App[None]):
         self.selected_path = resolved
         self._saved_content = content
         self.is_dirty = False
-        self._update_top_bar()
+        self._update_chrome()
         editor.focus()
         return True
+
+    def _open_workspace_folder(self, candidate: Path) -> None:
+        resolved = candidate.resolve()
+        if not resolved.is_dir():
+            self.notify(f"Folder not found: {resolved}", severity="error")
+            return
+
+        def _do_switch() -> None:
+            self.workspace_root = resolved
+            self.selected_path = resolved
+            self.active_file = None
+            editor = self.query_one("#editor", TextArea)
+            self._suppress_dirty = True
+            try:
+                editor.text = ""
+                editor.language = None
+            finally:
+                self._suppress_dirty = False
+            self._saved_content = ""
+            self.is_dirty = False
+            record_recent_folder(resolved, store_path=self._recent_store)
+            self._refresh_recent_list()
+            self._sync_workspace_ui(show_welcome=False)
+            self._refresh_tree()
+            self._update_chrome()
+            editor.focus()
+            self.notify(f"Opened {resolved.name}/")
+
+        self._guard_unsaved(_do_switch)
 
     def _guard_unsaved(self, on_continue: Callable[[], None]) -> None:
         """Prompt to save/discard before leaving a dirty buffer, then run on_continue."""
@@ -230,7 +431,7 @@ class TermCodeApp(App[None]):
 
         self._saved_content = editor.text
         self.is_dirty = False
-        self._update_top_bar()
+        self._update_chrome()
         self.notify(f"Saved {self.active_file.name}")
         if after_save is not None:
             after_save()
@@ -269,7 +470,7 @@ class TermCodeApp(App[None]):
                 self._saved_content = editor.text
                 self.is_dirty = False
                 self._apply_editor_language(dest)
-                self._update_top_bar()
+                self._update_chrome()
                 self._refresh_tree()
                 self.notify(f"Saved {dest.name}")
                 if after_save is not None:
@@ -314,13 +515,31 @@ class TermCodeApp(App[None]):
             event.stop()
             self.action_open_palette()
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "sidebar-open-folder-btn":
+            self.action_open_folder()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id == "start-list" and event.option_id is not None:
+            method = getattr(self, f"action_{event.option_id}", None)
+            if callable(method):
+                method()
+        elif event.option_list.id == "recent-list" and event.option_id is not None:
+            idx = int(event.option_id)
+            if 0 <= idx < len(self._recent_folders):
+                self._open_workspace_folder(self._recent_folders[idx])
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "editor" or self._suppress_dirty:
             return
         dirty_now = event.text_area.text != self._saved_content
         if dirty_now != self.is_dirty:
             self.is_dirty = dirty_now
-            self._update_top_bar()
+        self._update_chrome()
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if event.text_area.id == "editor":
+            self._update_chrome()
 
     def on_tree_node_highlighted(self, event: DirectoryTree.NodeHighlighted) -> None:
         data = getattr(event.node, "data", None)
@@ -366,15 +585,24 @@ class TermCodeApp(App[None]):
     def action_save_file(self) -> None:
         if not self._on_main_screen():
             return
+        if self.query_one("#welcome-view").display:
+            self.notify("Open a folder or create a file first.")
+            return
         self._save_current()
 
     def action_save_file_as(self) -> None:
         if not self._on_main_screen():
             return
+        if self.query_one("#welcome-view").display:
+            self.notify("Open a folder or create a file first.")
+            return
         self._prompt_save_as()
 
     def action_run_file(self) -> None:
         if not self._on_main_screen():
+            return
+        if self.query_one("#welcome-view").display:
+            self.notify("Open a file or create one (Ctrl+N) before running.")
             return
         if self.runner.is_running:
             self.notify("A program is already running. Press F7 (/stop) to stop it.", severity="warning")
@@ -389,23 +617,26 @@ class TermCodeApp(App[None]):
         if self.active_file is None:
             return
         source = self.active_file
+        ws_root = self.workspace_root or source.parent
+        out_pane = self.query_one("#output-pane")
+        out_pane.display = True
         header = self.query_one("#output-header", Static)
         stdin_input = self.query_one("#stdin-input", Input)
 
         try:
-            plan_preview = build_run_plan(source, self.workspace_root, source.parent)
+            plan_preview = build_run_plan(source, ws_root, source.parent)
         except RunnerError as exc:
             self.append_output(f"[Error] {exc}\n")
             self.notify(str(exc), severity="error")
             return
 
         self.append_output(f"$ {plan_preview.display_cmd}\n")
-        header.update(f"OUTPUT [Running {source.name}... F7 /stop]")
+        header.update(f"TERMINAL  ·  Running {source.name}  (F7 Stop)")
         stdin_input.disabled = False
-        stdin_input.placeholder = "Program running — type input and press Enter..."
+        stdin_input.display = True
 
         try:
-            result = await self.runner.run(source, self.workspace_root, self.append_output)
+            result = await self.runner.run(source, ws_root, self.append_output)
         except RunnerError as exc:
             self.append_output(f"[Error] {exc}\n")
             self.notify(str(exc), severity="error")
@@ -421,11 +652,11 @@ class TermCodeApp(App[None]):
                     f"[Exited {result.exit_code} in {result.duration_seconds:.2f}s]\n"
                 )
         finally:
-            header.update("OUTPUT [Idle]")
+            header.update("TERMINAL  ·  Idle")
             stdin_input.value = ""
             stdin_input.disabled = True
-            stdin_input.placeholder = "Program input (enabled while running)..."
-            if self._on_main_screen():
+            stdin_input.display = False
+            if self._on_main_screen() and self.query_one("#editor").display:
                 self.query_one("#editor", TextArea).focus()
 
     def action_stop_run(self) -> None:
@@ -443,6 +674,13 @@ class TermCodeApp(App[None]):
     def action_new_file(self) -> None:
         if not self._on_main_screen():
             return
+        if self.workspace_root is None:
+            # Open an untitled scratch editor immediately when no folder is open
+            self._sync_workspace_ui(show_welcome=False)
+            self._update_chrome()
+            self.query_one("#editor", TextArea).focus()
+            return
+
         base_dir = self._target_dir_for_create()
 
         def _create(raw_name: str | None) -> None:
@@ -468,6 +706,9 @@ class TermCodeApp(App[None]):
 
     def action_new_folder(self) -> None:
         if not self._on_main_screen():
+            return
+        if self.workspace_root is None:
+            self.notify("Open a folder first (Ctrl+O) before creating a subfolder.", severity="warning")
             return
         base_dir = self._target_dir_for_create()
 
@@ -496,6 +737,9 @@ class TermCodeApp(App[None]):
     def action_open_file(self) -> None:
         if not self._on_main_screen():
             return
+        if self.workspace_root is None:
+            self.notify("Open a folder first (Ctrl+O) to pick files.", severity="warning")
+            return
         files = list_workspace_files(self.workspace_root)
         if not files:
             self.notify("No files in this folder yet. Press Ctrl+N to create one.")
@@ -510,49 +754,13 @@ class TermCodeApp(App[None]):
     def action_open_folder(self) -> None:
         if not self._on_main_screen():
             return
+        start = self.workspace_root or Path.home()
 
-        def _switch(raw_path: str | None) -> None:
-            if raw_path is None:
-                return
-            cleaned = raw_path.strip()
-            if not cleaned:
-                return
-            candidate = Path(cleaned).expanduser()
-            if not candidate.is_absolute():
-                candidate = self.workspace_root / candidate
-            candidate = candidate.resolve()
-            if not candidate.is_dir():
-                self.notify(f"Folder not found: {candidate}", severity="error")
-                return
+        def _picked(folder: Path | None) -> None:
+            if folder is not None:
+                self._open_workspace_folder(folder)
 
-            def _do_switch() -> None:
-                self.workspace_root = candidate
-                self.selected_path = candidate
-                self.active_file = None
-                editor = self.query_one("#editor", TextArea)
-                self._suppress_dirty = True
-                try:
-                    editor.text = ""
-                    editor.language = None
-                finally:
-                    self._suppress_dirty = False
-                self._saved_content = ""
-                self.is_dirty = False
-                self._refresh_tree()
-                self._update_top_bar()
-                self.notify(f"Opened folder {candidate}")
-
-            self._guard_unsaved(_do_switch)
-
-        self.push_screen(
-            TextInputModal(
-                title="Open Folder",
-                prompt="Enter a folder path (supports ~ and ..):",
-                initial=str(self.workspace_root),
-                confirm_label="Open",
-            ),
-            _switch,
-        )
+        self.push_screen(FolderPickerModal(start_dir=start), _picked)
 
     def action_rename_item(self) -> None:
         if not self._on_main_screen():
@@ -572,7 +780,6 @@ class TermCodeApp(App[None]):
                 self.notify(str(exc), severity="error")
                 return
 
-            # Review Focus #4: Update active buffer path & language without losing edits
             if self.active_file is not None:
                 active_res = self.active_file.resolve()
                 if active_res == old_path:
@@ -584,7 +791,7 @@ class TermCodeApp(App[None]):
 
             self.selected_path = renamed
             self._refresh_tree()
-            self._update_top_bar()
+            self._update_chrome()
             self.notify(f"Renamed to {renamed.name}")
 
         self.push_screen(
@@ -617,7 +824,6 @@ class TermCodeApp(App[None]):
                 self.notify(str(exc), severity="error")
                 return
 
-            # Review Focus #4: Reset active file cleanly if it was deleted
             if self.active_file is not None:
                 active_res = self.active_file.resolve()
                 if active_res == old_path or _is_within(active_res, old_path):
@@ -634,7 +840,7 @@ class TermCodeApp(App[None]):
                 self.selected_path = self.workspace_root
 
             self._refresh_tree()
-            self._update_top_bar()
+            self._update_chrome()
             self.notify(f"Deleted {old_path.name}")
 
         self.push_screen(
@@ -651,6 +857,22 @@ class TermCodeApp(App[None]):
             return
         sidebar = self.query_one("#sidebar")
         sidebar.display = not sidebar.display
+
+    def action_toggle_terminal(self) -> None:
+        if not self._on_main_screen():
+            return
+        out_pane = self.query_one("#output-pane")
+        out_pane.display = not out_pane.display
+
+    def action_toggle_hidden(self) -> None:
+        if not self._on_main_screen():
+            return
+        tree = self.query_one("#file-tree", FilteredDirectoryTree)
+        tree.show_hidden = not tree.show_hidden
+        if self.workspace_root is not None:
+            tree.reload()
+        state = "shown" if tree.show_hidden else "hidden"
+        self.notify(f"Hidden files {state}")
 
     def action_clear_output(self) -> None:
         if not self._on_main_screen():

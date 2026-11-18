@@ -10,12 +10,17 @@ from termcode import __version__
 from termcode.app import TermCodeApp
 
 
-def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path, Path | None]:
-    """Resolve optional CLI path into (workspace_root, initial_file)."""
-    base = (cwd or Path.cwd()).resolve()
-    if arg is None:
-        return base, None
+def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path | None, Path | None]:
+    """Resolve optional CLI path into (workspace_root, initial_file).
 
+    When invoked with no path (`termcode`), returns (None, None) so the app opens
+    to the VS Code-style Welcome screen with no folder open. Pass `.` or a path
+    to open a folder or file directly.
+    """
+    if arg is None:
+        return None, None
+
+    base = (cwd or Path.cwd()).resolve()
     target = Path(arg).expanduser()
     if not target.is_absolute():
         target = base / target
@@ -38,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         "path",
         nargs="?",
         default=None,
-        help="Optional folder or file to open (defaults to current directory).",
+        help="Optional folder or file to open (omit for Welcome screen; pass '.' for current directory).",
     )
     parser.add_argument(
         "--version",

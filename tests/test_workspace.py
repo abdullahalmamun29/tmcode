@@ -99,3 +99,23 @@ def test_list_workspace_files_skips_ignored_dirs(tmp_path: Path) -> None:
 
     found = [p.relative_to(tmp_path).as_posix() for p in list_workspace_files(tmp_path)]
     assert found == ["main.py", "src/app.cpp"]
+
+
+def test_recent_folders_load_and_record(tmp_path: Path) -> None:
+    from termcode.workspace import load_recent_folders, record_recent_folder
+
+    store = tmp_path / "recent.json"
+    d1 = tmp_path / "proj_a"
+    d2 = tmp_path / "proj_b"
+    d1.mkdir()
+    d2.mkdir()
+
+    assert load_recent_folders(store_path=store) == []
+    record_recent_folder(d1, store_path=store)
+    record_recent_folder(d2, store_path=store)
+    record_recent_folder(d1, store_path=store)
+    assert load_recent_folders(store_path=store) == [d1.resolve(), d2.resolve()]
+
+    # Non-existent folders are filtered out on load
+    d2.rmdir()
+    assert load_recent_folders(store_path=store) == [d1.resolve()]

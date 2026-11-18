@@ -289,3 +289,130 @@ class UnsavedChangesModal(ModalScreen[str]):
 
     def action_cancel(self) -> None:
         self.dismiss("cancel")
+
+
+class FolderPickerModal(ModalScreen[Path | None]):
+    """Interactive VS Code-style folder browser and path selector."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, start_dir: Path | None = None) -> None:
+        super().__init__()
+        initial = start_dir if (start_dir and start_dir.is_dir()) else Path.home()
+        self._current: Path = initial.resolve()
+        self._entries: list[Path] = []
+
+    def compose(self) -> ComposeResult:
+        home = Path.home()
+        quick_places: list[tuple[str, str, Path]] = [("quick-home", "~ Home", home)]
+        for label_name in ("Documents", "Desktop", "Projects"):
+            candidate = home / label_name
+            if candidate.is_dir():
+                quick_places.append((f"quick-{label_name.lower()}", label_name, candidate))
+        self._quick_map: dict[str, Path] = {btn_id: p for btn_id, _, p in quick_places}
+
+        with Vertical(id="folder-dialog", classes="modal-box"):
+            yield Label("Open Folder", classes="modal-title", markup=False)
+            yield Input(
+                value=str(self._current),
+                placeholder="Type a path or select a folder below...",
+                id="folder-path-input",
+            )
+            with Horizontal(classes="quick-bar"):
+                yield Button(".. Up", id="quick-up", classes="quick-btn")
+                for btn_id, label, _ in quick_places:
+                    yield Button(label, id=btn_id, classes="quick-btn")
+            yield OptionList(id="folder-list")
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Open This Folder", variant="primary", id="open-folder-btn")
+                yield Button("Cancel", id="cancel-btn")
+
+    def on_mount(self) -> None:
+        self._load_directory(self._current)
+        self.query_one("#folder-list", OptionList).focus()
+
+    def _load_directory(self, directory: Path) -> None:
+        self._current = directory.resolve()
+        path_input = self.query_one("#folder-path-input", Input)
+        path_input.value = str(self._current)
+
+        option_list = self.query_one("#folder-list", OptionList)
+        option_list.clear_options()
+        self._entries = []
+
+        if self._current.parent != self._current:
+            self._entries.append(self._current.parent)
+            option_list.add_option(Option("..   (Parent Folder)", id="0"))
+
+        try:
+            subdirs = sorted(
+                (
+                    p
+                    for p in self._current.iterdir()
+                    if p.is_dir() and not p.name.startswith(".")
+                ),
+                key=lambda p: p.name.lower(),
+            )
+        except OSError:
+            subdirs = []
+
+        for subdir in subdirs:
+            idx = len(self._entries)
+            self._entries.append(subdir)
+            option_list.add_option(Option(f"{subdir.name}/", id=str(idx)))
+
+        if self._entries:
+            option_list.highlighted = 0
+
+    def _resolve_input_path(self) -> Path | None:
+        raw = self.query_one("#folder-path-input", Input).value.strip()
+        if not raw:
+            return self._current
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = self._current / candidate
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return None
+        return resolved if resolved.is_dir() else None
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "folder-path-input":
+            return
+        resolved = self._resolve_input_path()
+        if resolved is None:
+            self.app.notify(f"Folder not found: {event.value}", severity="error")
+            return
+        if resolved == self._current:
+            self.dismiss(resolved)
+        else:
+            self._load_directory(resolved)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id is None:
+            return
+        idx = int(event.option_id)
+        if 0 <= idx < len(self._entries):
+            self._load_directory(self._entries[idx])
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id or ""
+        if btn_id == "open-folder-btn":
+            resolved = self._resolve_input_path()
+            if resolved is None:
+                self.app.notify("Enter a valid existing folder path.", severity="error")
+                return
+            self.dismiss(resolved)
+        elif btn_id == "cancel-btn":
+            self.dismiss(None)
+        elif btn_id == "quick-up":
+            if self._current.parent != self._current:
+                self._load_directory(self._current.parent)
+        elif btn_id in self._quick_map:
+            self._load_directory(self._quick_map[btn_id])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
