@@ -1,0 +1,131 @@
+Screen {
+    background: #1e1e1e;
+    color: #d4d4d4;
+}
+
+#top-bar {
+    dock: top;
+    height: 1;
+    background: #007acc;
+    color: #ffffff;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#workspace-body {
+    height: 1fr;
+}
+
+#sidebar {
+    width: 28;
+    min-width: 18;
+    max-width: 45;
+    border-right: solid #3c3c3c;
+    background: #252526;
+}
+
+#sidebar-header {
+    height: 1;
+    background: #2d2d30;
+    color: #cccccc;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#file-tree {
+    height: 1fr;
+    background: #252526;
+    scrollbar-size: 1 1;
+}
+
+#main-pane {
+    width: 1fr;
+    height: 1fr;
+}
+
+#editor {
+    height: 7fr;
+    min-height: 6;
+    border-bottom: solid #3c3c3c;
+}
+
+#output-pane {
+    height: 3fr;
+    min-height: 6;
+    background: #181818;
+}
+
+#output-header {
+    height: 1;
+    background: #2d2d30;
+    color: #cccccc;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#output-log {
+    height: 1fr;
+    background: #181818;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+#stdin-input {
+    height: 3;
+    border: tall #3c3c3c;
+    background: #1f1f1f;
+}
+
+#stdin-input:disabled {
+    opacity: 0.45;
+}
+
+/* Modal styling */
+CommandPaletteModal,
+TextInputModal,
+FilePickerModal,
+ConfirmModal,
+UnsavedChangesModal {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.65);
+}
+
+.modal-box {
+    width: 76;
+    max-width: 92%;
+    height: auto;
+    max-height: 85%;
+    background: #252526;
+    border: round #007acc;
+    padding: 1 2;
+}
+
+.modal-title {
+    text-style: bold;
+    color: #ffffff;
+    margin-bottom: 1;
+}
+
+.modal-subtitle {
+    color: #bbbbbb;
+    margin-bottom: 1;
+}
+
+#palette-list,
+#picker-list {
+    height: 14;
+    max-height: 18;
+    margin-top: 1;
+    border: solid #3c3c3c;
+    background: #1e1e1e;
+}
+
+.modal-buttons {
+    height: auto;
+    align: right middle;
+    margin-top: 1;
+}
+
+.modal-buttons Button {
+    margin-left: 1;
+}
