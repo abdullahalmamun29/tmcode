@@ -217,36 +217,31 @@ class TermCodeApp(App[None]):
 
             with Vertical(id="main-pane"):
                 with Horizontal(id="tab-bar"):
-                    yield Static("Welcome", id="active-tab", markup=False)
+                    yield Static("Home", id="active-tab", markup=False)
                     yield Static("", id="tab-meta", markup=False)
 
                 with Vertical(id="welcome-view"):
                     with Vertical(id="welcome-card"):
                         yield Static("TermCode", id="welcome-title", markup=False)
                         yield Static(
-                            "Lightweight terminal editor for Python, C & C++",
+                            "Select a folder to open your workspace",
                             id="welcome-subtitle",
                             markup=False,
                         )
-                        with Horizontal(id="welcome-columns"):
-                            with Vertical(id="welcome-start"):
-                                yield Static("Start", classes="welcome-section-title", markup=False)
-                                yield OptionList(
-                                    Option("Open Folder...     Ctrl+O", id="open_folder"),
-                                    Option("New File...        Ctrl+N", id="new_file"),
-                                    Option("Command Menu       Ctrl+K", id="open_palette"),
-                                    id="start-list",
-                                )
-                            with Vertical(id="welcome-recent"):
-                                yield Static("Recent", classes="welcome-section-title", markup=False)
-                                yield OptionList(id="recent-list")
-                                yield Static(
-                                    "No recent folders yet",
-                                    id="recent-empty",
-                                    markup=False,
-                                )
+                        yield Button(
+                            "Open Folder   (Ctrl+O)",
+                            id="home-open-folder-btn",
+                        )
+                        with Vertical(id="home-recent-section"):
+                            yield Static("Recent Folders", classes="welcome-section-title", markup=False)
+                            yield OptionList(id="recent-list")
+                            yield Static(
+                                "No recent folders yet",
+                                id="recent-empty",
+                                markup=False,
+                            )
                         yield Static(
-                            "Tip: run 'termcode .' from any terminal to open the current folder directly.",
+                            "Tip: run 'termcode' inside any project folder to open it directly.",
                             id="welcome-tip",
                             markup=False,
                         )
@@ -306,9 +301,7 @@ class TermCodeApp(App[None]):
         else:
             self._sync_workspace_ui(show_welcome=True)
             self._update_chrome()
-            start_list = self.query_one("#start-list", OptionList)
-            start_list.highlighted = 0
-            start_list.focus()
+            self.query_one("#home-open-folder-btn", Button).focus()
 
     def _on_main_screen(self) -> bool:
         return len(self.screen_stack) == 1
@@ -362,7 +355,7 @@ class TermCodeApp(App[None]):
         on_welcome = self.query_one("#welcome-view").display
 
         if on_welcome:
-            tab.update("Welcome")
+            tab.update("Home")
             meta.update("No Folder Opened" if self.workspace_root is None else str(self.workspace_root))
         else:
             if self.active_file is not None:
@@ -626,7 +619,7 @@ class TermCodeApp(App[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
-        if btn_id == "sidebar-open-folder-btn":
+        if btn_id in ("sidebar-open-folder-btn", "home-open-folder-btn"):
             self.action_open_folder()
         elif btn_id == "term-grow-btn":
             self.action_terminal_grow()
@@ -638,11 +631,7 @@ class TermCodeApp(App[None]):
             self.action_clear_output()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option_list.id == "start-list" and event.option_id is not None:
-            method = getattr(self, f"action_{event.option_id}", None)
-            if callable(method):
-                method()
-        elif event.option_list.id == "recent-list" and event.option_id is not None:
+        if event.option_list.id == "recent-list" and event.option_id is not None:
             idx = int(event.option_id)
             if 0 <= idx < len(self._recent_folders):
                 self._open_workspace_folder(self._recent_folders[idx])

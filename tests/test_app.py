@@ -31,13 +31,18 @@ def test_parse_cli_target(tmp_path: Path) -> None:
     f = tmp_path / "demo.py"
     f.write_text("print(1)\n", encoding="utf-8")
 
-    # Plain `termcode` opens with NO folder (VS Code Welcome screen)
-    root, initial = parse_cli_target(None, cwd=tmp_path)
-    assert root is None and initial is None
+    # Plain `termcode` from home directory opens the Home tab (no folder opened)
+    home = Path.home().resolve()
+    root_home, initial_home = parse_cli_target(None, cwd=home)
+    assert root_home is None and initial_home is None
 
-    # `termcode .` opens current directory
-    root_dot, initial_dot = parse_cli_target(".", cwd=tmp_path)
-    assert root_dot == tmp_path.resolve() and initial_dot is None
+    # Plain `termcode` from any non-home folder opens that folder directly
+    root, initial = parse_cli_target(None, cwd=tmp_path)
+    assert root == tmp_path.resolve() and initial is None
+
+    # Explicit `termcode .` opens current directory even from home
+    root_dot, initial_dot = parse_cli_target(".", cwd=home)
+    assert root_dot == home and initial_dot is None
 
     root2, initial2 = parse_cli_target(str(tmp_path))
     assert root2 == tmp_path.resolve() and initial2 is None
@@ -379,9 +384,11 @@ async def test_launch_with_no_folder_shows_welcome_and_folder_picker(tmp_path: P
         assert app.query_one("#no-folder-box").display is True
         assert app.query_one("#file-tree").display is False
         assert app.query_one("#stdin-input").display is False
+        assert str(app.query_one("#active-tab").render()) == "Home"
+        assert len(app.query("#start-list")) == 0
 
-        # Open Folder via Ctrl+O interactive folder picker
-        await pilot.press("ctrl+o")
+        # Clicking the Home tab's Open Folder button opens FolderPickerModal
+        await pilot.click("#home-open-folder-btn")
         await pilot.pause()
         assert isinstance(app.screen, FolderPickerModal)
         app.screen.query_one("#folder-path-input", Input).value = str(proj)

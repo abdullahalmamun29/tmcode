@@ -13,14 +13,19 @@ from termcode.app import TermCodeApp
 def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path | None, Path | None]:
     """Resolve optional CLI path into (workspace_root, initial_file).
 
-    When invoked with no path (`termcode`), returns (None, None) so the app opens
-    to the VS Code-style Welcome screen with no folder open. Pass `.` or a path
-    to open a folder or file directly.
+    When invoked with no path (`termcode`) from the user's home directory,
+    returns (None, None) so TermCode opens on the Home tab asking to select a
+    folder. From any other directory, opens that directory directly.
     """
-    if arg is None:
-        return None, None
-
     base = (cwd or Path.cwd()).resolve()
+    if arg is None:
+        try:
+            if base == Path.home().resolve():
+                return None, None
+        except RuntimeError:
+            pass
+        return base, None
+
     target = Path(arg).expanduser()
     if not target.is_absolute():
         target = base / target
@@ -43,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         "path",
         nargs="?",
         default=None,
-        help="Optional folder or file to open (omit for Welcome screen; pass '.' for current directory).",
+        help="Optional folder or file to open (from home directory, opens the Home folder selector; from any other folder, opens it directly).",
     )
     parser.add_argument(
         "--version",

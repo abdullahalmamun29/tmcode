@@ -33,7 +33,7 @@ python -m venv .venv
 ## Usage
 
 ```bash
-termcode                  # Start on Welcome screen (no folder opened — pick or choose recent)
+termcode                  # From ~ opens the Home tab (folder selector & recent folders); from any project folder opens it directly
 termcode .                # Open current directory directly
 termcode path/to/project  # Open a specific folder
 termcode path/to/main.py  # Open a specific file and its folder

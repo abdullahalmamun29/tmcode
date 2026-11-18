@@ -114,7 +114,7 @@ Screen {
     text-align: right;
 }
 
-/* Welcome View (No Folder Open) */
+/* Home View (No Folder Open) */
 #welcome-view {
     height: 1fr;
     background: #1f1f1f;
@@ -123,8 +123,8 @@ Screen {
 }
 
 #welcome-card {
-    width: 74;
-    max-width: 94%;
+    width: 60;
+    max-width: 92%;
     height: auto;
     background: #1f1f1f;
     padding: 1 2;
@@ -141,18 +141,23 @@ Screen {
     margin-bottom: 2;
 }
 
-#welcome-columns {
-    height: auto;
+#home-open-folder-btn {
+    width: 30;
+    height: 3;
+    background: #0078d4;
+    color: #ffffff;
+    border: none;
+    content-align: center middle;
+    margin-bottom: 2;
 }
 
-#welcome-start {
-    width: 34;
-    height: auto;
-    padding-right: 4;
+#home-open-folder-btn:hover,
+#home-open-folder-btn:focus {
+    background: #1a86d9;
+    text-style: bold;
 }
 
-#welcome-recent {
-    width: 1fr;
+#home-recent-section {
     height: auto;
 }
 
@@ -160,18 +165,6 @@ Screen {
     color: #cccccc;
     text-style: bold;
     margin-bottom: 1;
-}
-
-#start-list {
-    height: auto;
-    background: #1f1f1f;
-    border: none;
-    padding: 0;
-    color: #3794ff;
-}
-
-#start-list:focus {
-    border: none;
 }
 
 #recent-list {
