@@ -460,3 +460,30 @@ async def test_terminal_resize_selection_copy_and_clear(tmp_path: Path) -> None:
         await pilot.pause()
         assert out_log.text == ""
         assert app.output_history == ""
+
+
+@pytest.mark.asyncio
+async def test_ctrl_a_selects_all_in_editor_and_terminal(tmp_path: Path) -> None:
+    sample = tmp_path / "demo.py"
+    sample.write_text("line1 = 1\nline2 = 2\n", encoding="utf-8")
+
+    app = TermCodeApp(tmp_path, initial_file=sample)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        editor = app.query_one("#editor", TextArea)
+        editor.focus()
+        await pilot.pause()
+
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        assert editor.selected_text == "line1 = 1\nline2 = 2\n"
+
+        app.append_output("out1\nout2\n")
+        await pilot.pause()
+        out_log = app.query_one("#output-log", TextArea)
+        out_log.focus()
+        await pilot.pause()
+
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        assert out_log.selected_text == "out1\nout2\n"

@@ -125,6 +125,14 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
+class CodeTextArea(TextArea):
+    """TextArea with VS Code-style Ctrl+A select-all (keeping Home for line start)."""
+
+    BINDINGS = [
+        Binding("ctrl+a", "select_all", "Select All", show=False),
+    ]
+
+
 class FilteredDirectoryTree(DirectoryTree):
     """DirectoryTree that hides dotfiles and noisy build/cache folders by default."""
 
@@ -243,7 +251,7 @@ class TermCodeApp(App[None]):
                             markup=False,
                         )
 
-                yield TextArea.code_editor(
+                yield CodeTextArea.code_editor(
                     "",
                     language=None,
                     theme="vscode_dark",
@@ -262,7 +270,7 @@ class TermCodeApp(App[None]):
                         yield Button("▼", id="term-shrink-btn", classes="term-tool-btn")
                         yield Button("Copy", id="term-copy-btn", classes="term-tool-btn")
                         yield Button("Clear", id="term-clear-btn", classes="term-tool-btn")
-                    yield TextArea(
+                    yield CodeTextArea(
                         "",
                         read_only=True,
                         show_line_numbers=False,
