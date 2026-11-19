@@ -494,3 +494,129 @@ async def test_ctrl_a_selects_all_in_editor_and_terminal(tmp_path: Path) -> None
         await pilot.press("ctrl+a")
         await pilot.pause()
         assert out_log.selected_text == "out1\nout2\n"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_copies_selection_or_current_line_never_full_output(tmp_path: Path) -> None:
+    app = TermCodeApp(tmp_path)
+    async with app.run_test(size=(120, 36)) as pilot:
+        app.append_output("first line\nsecond line\nthird line\n")
+        await pilot.pause()
+        out_log = app.query_one("#output-log", TextArea)
+        out_log.focus()
+        await pilot.pause()
+
+        # Cursor on line 1 with NO selection + Ctrl+C copies ONLY that single line
+        out_log.cursor_location = (1, 0)
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._clipboard == "second line"
+
+        # Ctrl+A then Ctrl+C copies ALL text
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._clipboard == "first line\nsecond line\nthird line\n"
+
+
+@pytest.mark.asyncio
+async def test_c_highlighting_auto_indent_and_autocomplete(tmp_path: Path) -> None:
+    c_file = tmp_path / "main.c"
+    c_file.write_text("", encoding="utf-8")
+
+    app = TermCodeApp(tmp_path, initial_file=c_file)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        editor = app.query_one("#editor", TextArea)
+        assert editor.language == "c"
+
+        # Auto-indent after '{' in C
+        editor.focus()
+        editor.insert("int main() {")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert editor.text.endswith("{\n    ")
+
+        # Typing 'print' in .c triggers completion popup with 'printf'; Tab accepts it
+        for ch in "print":
+            await pilot.press(ch)
+        await pilot.pause()
+        popup = app.query_one("#completion-popup")
+        assert popup.display is True
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert "printf" in editor.text
+        assert popup.display is False
+
+
+@pytest.mark.asyncio
+async def test_sidebar_buttons_multi_tab_and_split_editor(tmp_path: Path) -> None:
+    f1 = tmp_path / "one.py"
+    f2 = tmp_path / "two.c"
+    f1.write_text("a = 1\n", encoding="utf-8")
+    f2.write_text("int main(){return 0;}\n", encoding="utf-8")
+
+    app = TermCodeApp(tmp_path, initial_file=f1)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+
+        # Sidebar +File button opens New File modal
+        await pilot.click("#sidebar-new-file-btn")
+        await pilot.pause()
+        assert isinstance(app.screen, TextInputModal)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Sidebar +Dir button opens New Folder modal
+        await pilot.click("#sidebar-new-dir-btn")
+        await pilot.pause()
+        assert isinstance(app.screen, TextInputModal)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Edit tab 1, then open tab 2: both stay open with independent buffers
+        editor = app.query_one("#editor", TextArea)
+        editor.text = "a = 99\n"
+        await pilot.pause()
+        app.load_file(f2)
+        await pilot.pause()
+        assert len(app.left_pane.tabs) == 2
+        assert app.active_file == f2.resolve()
+
+        # Switch back to tab 1 via F11 (/next-tab): unsaved edit preserved!
+        await pilot.press("f11")
+        await pilot.pause()
+        assert app.active_file == f1.resolve()
+        assert editor.text == "a = 99\n"
+
+        # Toggle side-by-side split via F12 (/split-editor)
+        await pilot.press("f12")
+        await pilot.pause()
+        assert app.is_split is True
+        assert app.query_one("#right-editor-col").display is True
+
+        # Focus right editor and load f2 side-by-side
+        right_ed = app.query_one("#editor-right", TextArea)
+        right_ed.focus()
+        await pilot.pause()
+        app.load_file(f2)
+        await pilot.pause()
+        assert right_ed.text == "int main(){return 0;}\n"
+        assert editor.text == "a = 99\n"
+
+        # Unsplit via F12 merges tabs back safely without losing unsaved edits
+        await pilot.press("f12")
+        await pilot.pause()
+        assert app.is_split is False
+        assert app.query_one("#right-editor-col").display is False
+
+        # Close clean tab via Ctrl+W
+        app.load_file(f2)
+        await pilot.pause()
+        await pilot.press("ctrl+w")
+        await pilot.pause()
+        assert len(app.left_pane.tabs) == 1
+        assert app.active_file == f1.resolve()

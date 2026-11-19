@@ -4,12 +4,13 @@ Lightweight, cross-platform VS Code-style terminal code editor and runner for **
 
 ## Features
 
-- Launch right from any terminal (`termcode`, `termcode .`, `termcode path/to/folder`, or `termcode file.py`)
-- Full-screen 3-pane layout: File/Folder Explorer, Syntax-Highlighted Editor, and Interactive Output Panel
-- Unified `/run` (`F5`) that compiles & runs Python, C, and C++ with live output and built-in keyboard input (`input()`, `scanf`, `cin`) right inside the Output panel
-- Searchable `/` command menu (`Ctrl+K` anywhere, or `/` outside text boxes) with a dedicated shortcut for every action
-- Safe file & folder management (create files/folders inside the selected directory, quick-open files, switch folders, rename, delete with confirmation, unsaved-changes guard, binary-file guard)
-- Cross-platform support for Linux, macOS, and Windows
+- Launch right from any terminal (`termcode` from `~` opens the Home folder picker; `termcode` inside any project folder opens it directly)
+- VS Code Dark Modern 3-pane layout: Explorer with `+F`/`+D` buttons, multi-tab + side-by-side split editor (`F12`), and draggable/resizable Terminal panel
+- VS Code Dark+ syntax colors across **17 languages** (Python, C, C++, JS/TS, HTML, CSS, JSON, Java, Go, Rust, Bash, SQL, Markdown, YAML, TOML, XML, Regex)
+- Lightweight offline code suggestions (language builtins + open-file words) and automatic indentation while typing
+- Unified `/run` (`F5`) supporting **Python, C, C++, JavaScript, TypeScript, Bash, Go, Rust, Java, Ruby, PHP, Perl, and Lua** with live interactive keyboard input
+- Real OS clipboard integration (Linux X11/Wayland, macOS, Windows), `Ctrl+A` select-all, and VS Code-style `Ctrl+C` (copies selection or current line)
+- Searchable `/` command menu (`Ctrl+K` anywhere, or `/` outside text inputs) with a shortcut for every action
 
 ## Installation
 
@@ -62,6 +63,9 @@ Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the f
 | `/terminal-shrink` | `Ctrl+Down` | Decrease Terminal panel height (or drag header bar) |
 | `/copy-output` | `F10` | Copy selected or full Terminal output |
 | `/clear-output` | `Ctrl+L` | Clear the Terminal output |
+| `/next-tab` | `F11` | Switch to the next open file tab |
+| `/close-tab` | `Ctrl+W` | Close the current file tab |
+| `/split-editor` | `F12` | Toggle side-by-side split editor |
 | `/quit` | `Ctrl+Q` | Exit TermCode |
 
 ## Running Tests

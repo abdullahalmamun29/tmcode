@@ -254,3 +254,30 @@ async def test_posix_pty_removes_reader_on_eof_no_spin(
     assert res.exit_code == 0
     assert "bye" in "".join(chunks)
     assert read_calls < 50, f"PTY reader busy-spun with {read_calls} os.read calls"
+
+
+@pytest.mark.asyncio
+async def test_multi_language_plans_and_node_bash_execution(tmp_path: Path) -> None:
+    # Verify plan dispatch for Go, Rust, Java, TypeScript
+    rs_file = tmp_path / "main.rs"
+    rs_file.write_text('fn main() { println!("rs"); }\n', encoding="utf-8")
+    rs_plan = build_run_plan(rs_file, tmp_path, tmp_path / "t", which=lambda n: f"/usr/bin/{n}")
+    assert rs_plan.compile_cmd is not None and "rustc" in rs_plan.compile_cmd[0]
+
+    go_file = tmp_path / "main.go"
+    go_file.write_text("package main\n", encoding="utf-8")
+    go_plan = build_run_plan(go_file, tmp_path, tmp_path / "t", which=lambda n: f"/usr/bin/{n}")
+    assert go_plan.run_cmd[:2] == ["/usr/bin/go", "run"]
+
+    # Real Node.js and Bash execution
+    js_file = tmp_path / "hello.js"
+    js_file.write_text("console.log('node-ok');\n", encoding="utf-8")
+    sh_file = tmp_path / "hello.sh"
+    sh_file.write_text("echo 'bash-ok'\n", encoding="utf-8")
+
+    runner = AsyncRunner()
+    for path, expected in [(js_file, "node-ok"), (sh_file, "bash-ok")]:
+        chunks: list[str] = []
+        res = await runner.run(path, tmp_path, chunks.append)
+        assert res.exit_code == 0 and not res.compile_failed
+        assert expected in "".join(chunks)

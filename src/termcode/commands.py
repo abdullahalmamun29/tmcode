@@ -135,6 +135,27 @@ COMMANDS: tuple[CommandSpec, ...] = (
         description="Clear the Terminal output",
     ),
     CommandSpec(
+        command="/next-tab",
+        action="next_tab",
+        shortcut="F11",
+        binding="f11",
+        description="Switch to the next open file tab",
+    ),
+    CommandSpec(
+        command="/close-tab",
+        action="close_tab",
+        shortcut="Ctrl+W",
+        binding="ctrl+w",
+        description="Close the current file tab",
+    ),
+    CommandSpec(
+        command="/split-editor",
+        action="toggle_split",
+        shortcut="F12",
+        binding="f12",
+        description="Toggle side-by-side split editor",
+    ),
+    CommandSpec(
         command="/quit",
         action="request_quit",
         shortcut="Ctrl+Q",

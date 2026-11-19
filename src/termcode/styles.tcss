@@ -3,6 +3,7 @@
 Screen {
     background: #1f1f1f;
     color: #cccccc;
+    layers: base overlay;
 }
 
 #workspace-body {
@@ -26,13 +27,35 @@ Screen {
     text-style: bold;
 }
 
-#sidebar-folder {
+#sidebar-folder-bar {
     height: 2;
     background: #181818;
-    color: #cccccc;
-    padding: 0 2;
-    text-style: bold;
     border-bottom: solid #2b2b2b;
+}
+
+#sidebar-folder {
+    width: 1fr;
+    height: 1;
+    background: #181818;
+    color: #cccccc;
+    padding: 0 1 0 2;
+    text-style: bold;
+}
+
+.sidebar-tool-btn {
+    width: auto;
+    min-width: 3;
+    height: 1;
+    background: #181818;
+    color: #858585;
+    border: none;
+    padding: 0 1;
+}
+
+.sidebar-tool-btn:hover,
+.sidebar-tool-btn:focus {
+    background: #2a2d2e;
+    color: #ffffff;
 }
 
 #no-folder-box {
@@ -90,10 +113,35 @@ Screen {
     background: #1f1f1f;
 }
 
-#tab-bar {
+#editors-row {
+    height: 1fr;
+}
+
+#left-editor-col {
+    width: 1fr;
+    height: 1fr;
+    background: #1f1f1f;
+}
+
+#right-editor-col {
+    width: 1fr;
+    height: 1fr;
+    background: #1f1f1f;
+    border-left: solid #2b2b2b;
+}
+
+#tab-bar,
+#right-tab-bar {
     height: 2;
     background: #181818;
     border-bottom: solid #2b2b2b;
+}
+
+#left-tabs,
+#right-tabs {
+    width: 1fr;
+    height: 1;
+    background: #181818;
 }
 
 #active-tab {
@@ -105,12 +153,34 @@ Screen {
     text-style: bold;
 }
 
+.editor-tab-btn {
+    width: auto;
+    min-width: 6;
+    height: 1;
+    background: #181818;
+    color: #858585;
+    border: none;
+    padding: 0 2;
+}
+
+.editor-tab-btn:hover {
+    background: #252526;
+    color: #cccccc;
+}
+
+.editor-tab-btn.-active {
+    background: #1f1f1f;
+    color: #ffffff;
+    text-style: bold;
+}
+
 #tab-meta {
-    width: 1fr;
+    width: auto;
+    max-width: 34;
     height: 1;
     background: #181818;
     color: #6e7681;
-    padding: 0 2;
+    padding: 0 1;
     text-align: right;
 }
 
@@ -188,8 +258,9 @@ Screen {
     margin-top: 2;
 }
 
-/* Code Editor */
-#editor {
+/* Code Editors */
+#editor,
+#editor-right {
     height: 1fr;
     min-height: 5;
     background: #1f1f1f;
@@ -202,8 +273,22 @@ Screen {
     scrollbar-color-active: #686868;
 }
 
-#editor:focus {
+#editor:focus,
+#editor-right:focus {
     border: none;
+}
+
+/* Floating Autocomplete Popup */
+#completion-popup {
+    layer: overlay;
+    width: 32;
+    height: auto;
+    max-height: 9;
+    background: #252526;
+    border: solid #454545;
+    color: #cccccc;
+    padding: 0;
+    display: none;
 }
 
 /* Terminal / Output Panel */

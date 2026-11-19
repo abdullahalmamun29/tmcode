@@ -28,6 +28,16 @@ class Language(str, Enum):
     PYTHON = "python"
     C = "c"
     CPP = "cpp"
+    JAVASCRIPT = "javascript"
+    TYPESCRIPT = "typescript"
+    BASH = "bash"
+    GO = "go"
+    RUST = "rust"
+    JAVA = "java"
+    RUBY = "ruby"
+    PHP = "php"
+    PERL = "perl"
+    LUA = "lua"
 
 
 @dataclass(frozen=True)
@@ -58,6 +68,19 @@ _RUNNABLE_EXTENSIONS: dict[str, Language] = {
     ".cpp": Language.CPP,
     ".cc": Language.CPP,
     ".cxx": Language.CPP,
+    ".js": Language.JAVASCRIPT,
+    ".mjs": Language.JAVASCRIPT,
+    ".cjs": Language.JAVASCRIPT,
+    ".ts": Language.TYPESCRIPT,
+    ".sh": Language.BASH,
+    ".bash": Language.BASH,
+    ".go": Language.GO,
+    ".rs": Language.RUST,
+    ".java": Language.JAVA,
+    ".rb": Language.RUBY,
+    ".php": Language.PHP,
+    ".pl": Language.PERL,
+    ".lua": Language.LUA,
 }
 
 _EDITOR_LANGUAGES: dict[str, str] = {
@@ -69,17 +92,66 @@ _EDITOR_LANGUAGES: dict[str, str] = {
     ".cxx": "cpp",
     ".hpp": "cpp",
     ".hh": "cpp",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "javascript",
+    ".tsx": "javascript",
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
     ".json": "json",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".sql": "sql",
     ".md": "markdown",
+    ".markdown": "markdown",
     ".toml": "toml",
     ".yaml": "yaml",
     ".yml": "yaml",
-    ".html": "html",
-    ".css": "css",
-    ".js": "javascript",
-    ".sh": "bash",
-    ".sql": "sql",
     ".xml": "xml",
+}
+
+_LANGUAGE_LABELS: dict[str, str] = {
+    ".py": "Python",
+    ".c": "C",
+    ".h": "C",
+    ".cpp": "C++",
+    ".cc": "C++",
+    ".cxx": "C++",
+    ".hpp": "C++",
+    ".hh": "C++",
+    ".js": "JavaScript",
+    ".jsx": "JavaScript",
+    ".mjs": "JavaScript",
+    ".cjs": "JavaScript",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".html": "HTML",
+    ".htm": "HTML",
+    ".css": "CSS",
+    ".json": "JSON",
+    ".java": "Java",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".sh": "Bash",
+    ".bash": "Bash",
+    ".zsh": "Shell",
+    ".sql": "SQL",
+    ".md": "Markdown",
+    ".toml": "TOML",
+    ".yaml": "YAML",
+    ".yml": "YAML",
+    ".xml": "XML",
+    ".rb": "Ruby",
+    ".php": "PHP",
+    ".pl": "Perl",
+    ".lua": "Lua",
 }
 
 
@@ -96,17 +168,10 @@ def editor_language_for_path(path: Path | None) -> str | None:
 
 
 def language_label_for_path(path: Path | None) -> str:
-    """Return a short human-readable language badge for the header."""
+    """Return a short human-readable language badge for the status bar."""
     if path is None:
         return "Untitled"
-    suffix = path.suffix.lower()
-    if suffix == ".py":
-        return "Python"
-    if suffix in (".c", ".h"):
-        return "C"
-    if suffix in (".cpp", ".cc", ".cxx", ".hpp", ".hh"):
-        return "C++"
-    return "Text"
+    return _LANGUAGE_LABELS.get(path.suffix.lower(), "Text")
 
 
 def _venv_python(venv_dir: Path, platform: str) -> Path:
@@ -174,9 +239,9 @@ def build_run_plan(
     lang = detect_language(source)
     if lang is None:
         ext = source.suffix or "(no extension)"
+        supported = ", ".join(sorted(_RUNNABLE_EXTENSIONS))
         raise RunnerError(
-            f"Unsupported file type for running: {ext}. "
-            "Supported: .py, .c, .cpp, .cc, .cxx"
+            f"Unsupported file type for running: {ext}. Supported: {supported}"
         )
 
     cwd = source.parent
@@ -213,26 +278,102 @@ def build_run_plan(
             display_cmd=f"gcc -Wall -Wextra {source.name} && ./{binary_name}",
         )
 
-    compiler = which("g++")
-    if not compiler:
-        raise RunnerError(
-            "Could not find 'g++' compiler on PATH. Install G++ (or MinGW on Windows)."
+    if lang is Language.CPP:
+        compiler = which("g++")
+        if not compiler:
+            raise RunnerError(
+                "Could not find 'g++' compiler on PATH. Install G++ (or MinGW on Windows)."
+            )
+        return RunPlan(
+            language=lang,
+            source=source,
+            compile_cmd=[
+                compiler,
+                "-std=c++17",
+                "-Wall",
+                "-Wextra",
+                str(source),
+                "-o",
+                str(output_bin),
+            ],
+            run_cmd=[str(output_bin)],
+            cwd=cwd,
+            display_cmd=f"g++ -std=c++17 -Wall -Wextra {source.name} && ./{binary_name}",
         )
+
+    if lang is Language.RUST:
+        compiler = which("rustc")
+        if not compiler:
+            raise RunnerError("Could not find 'rustc' compiler on PATH. Install Rust (rustup).")
+        return RunPlan(
+            language=lang,
+            source=source,
+            compile_cmd=[compiler, str(source), "-o", str(output_bin)],
+            run_cmd=[str(output_bin)],
+            cwd=cwd,
+            display_cmd=f"rustc {source.name} && ./{binary_name}",
+        )
+
+    if lang is Language.GO:
+        go_exe = which("go")
+        if not go_exe:
+            raise RunnerError("Could not find 'go' on PATH. Install Go to run .go files.")
+        return RunPlan(
+            language=lang,
+            source=source,
+            compile_cmd=None,
+            run_cmd=[go_exe, "run", str(source)],
+            cwd=cwd,
+            display_cmd=f"go run {source.name}",
+        )
+
+    if lang is Language.TYPESCRIPT:
+        for tool in ("tsx", "ts-node", "node"):
+            exe = which(tool)
+            if exe:
+                return RunPlan(
+                    language=lang,
+                    source=source,
+                    compile_cmd=None,
+                    run_cmd=[exe, str(source)],
+                    cwd=cwd,
+                    display_cmd=f"{tool} {source.name}",
+                )
+        raise RunnerError("Could not find 'tsx', 'ts-node', or 'node' on PATH for TypeScript.")
+
+    if lang is Language.BASH:
+        for tool in ("bash", "sh"):
+            exe = which(tool)
+            if exe:
+                return RunPlan(
+                    language=lang,
+                    source=source,
+                    compile_cmd=None,
+                    run_cmd=[exe, str(source)],
+                    cwd=cwd,
+                    display_cmd=f"{tool} {source.name}",
+                )
+        raise RunnerError("Could not find 'bash' or 'sh' on PATH.")
+
+    simple_interpreters: dict[Language, tuple[str, str]] = {
+        Language.JAVASCRIPT: ("node", "Node.js"),
+        Language.JAVA: ("java", "Java (JDK 11+)"),
+        Language.RUBY: ("ruby", "Ruby"),
+        Language.PHP: ("php", "PHP"),
+        Language.PERL: ("perl", "Perl"),
+        Language.LUA: ("lua", "Lua"),
+    }
+    exe_name, friendly = simple_interpreters[lang]
+    exe = which(exe_name)
+    if not exe:
+        raise RunnerError(f"Could not find '{exe_name}' on PATH. Install {friendly} to run {source.suffix} files.")
     return RunPlan(
         language=lang,
         source=source,
-        compile_cmd=[
-            compiler,
-            "-std=c++17",
-            "-Wall",
-            "-Wextra",
-            str(source),
-            "-o",
-            str(output_bin),
-        ],
-        run_cmd=[str(output_bin)],
+        compile_cmd=None,
+        run_cmd=[exe, str(source)],
         cwd=cwd,
-        display_cmd=f"g++ -std=c++17 -Wall -Wextra {source.name} && ./{binary_name}",
+        display_cmd=f"{exe_name} {source.name}",
     )
 
 

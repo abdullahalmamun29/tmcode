@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +17,14 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DirectoryTree, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
+from termcode.buffers import EditorPaneState, OpenBuffer
+from termcode.completions import (
+    compute_closing_brace_dedent,
+    compute_enter_indent,
+    extract_prefix,
+    get_completions,
+)
+from termcode.highlighting import register_extra_languages
 from termcode.modals import (
     CommandPaletteModal,
     ConfirmModal,
@@ -49,9 +58,24 @@ MAX_OUTPUT_HISTORY_CHARS = 500_000
 MIN_TERMINAL_HEIGHT = 4
 DEFAULT_TERMINAL_HEIGHT = 10
 
+_GTK_CLIPBOARD_SCRIPT = (
+    "import sys, gi\n"
+    "gi.require_version('Gtk', '3.0')\n"
+    "from gi.repository import Gtk, Gdk\n"
+    "text = sys.stdin.read()\n"
+    "cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)\n"
+    "cb.set_text(text, -1)\n"
+    "cb.store()\n"
+    "while Gtk.events_pending():\n"
+    "    Gtk.main_iteration()\n"
+)
+
 
 def _copy_to_os_clipboard(text: str) -> bool:
-    """Best-effort copy to the native OS clipboard if a clipboard helper is installed."""
+    """Copy text to the native OS clipboard across Linux, macOS, and Windows."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+
     candidates: list[list[str]]
     if sys.platform == "darwin":
         candidates = [["pbcopy"]]
@@ -63,6 +87,7 @@ def _copy_to_os_clipboard(text: str) -> bool:
             ["xclip", "-selection", "clipboard"],
             ["xsel", "--clipboard", "--input"],
         ]
+
     for cmd in candidates:
         if shutil.which(cmd[0]) is None:
             continue
@@ -78,7 +103,33 @@ def _copy_to_os_clipboard(text: str) -> bool:
             return True
         except (OSError, subprocess.SubprocessError):
             continue
+
+    # Linux X11 fallback using system GTK3 (PyGObject) when xclip/xsel are absent.
+    if sys.platform != "win32" and sys.platform != "darwin" and os.environ.get("DISPLAY"):
+        sys_py = shutil.which("python3")
+        if sys_py:
+            try:
+                subprocess.run(
+                    [sys_py, "-c", _GTK_CLIPBOARD_SCRIPT],
+                    input=text.encode("utf-8"),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                    timeout=2,
+                )
+                return True
+            except (OSError, subprocess.SubprocessError):
+                pass
+
     return False
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 class TerminalResizeHandle(Static):
@@ -117,20 +168,77 @@ class TerminalResizeHandle(Static):
             event.stop()
 
 
-def _is_within(child: Path, parent: Path) -> bool:
-    try:
-        child.resolve().relative_to(parent.resolve())
-        return True
-    except ValueError:
-        return False
-
-
 class CodeTextArea(TextArea):
-    """TextArea with VS Code-style Ctrl+A select-all (keeping Home for line start)."""
+    """VS Code-style TextArea: Ctrl+A select-all, Ctrl+C selection/line copy, C/C++ colors, auto-indent, autocomplete."""
 
     BINDINGS = [
         Binding("ctrl+a", "select_all", "Select All", show=False),
     ]
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        register_extra_languages(self)
+
+    def action_copy(self) -> None:
+        """Copy selected text, or the current line when nothing is selected (VS Code behavior)."""
+        selected = self.selected_text
+        if selected:
+            self.app.copy_to_clipboard(selected)
+            self.app.notify(f"Copied selection ({len(selected)} chars)")
+            return
+        row = self.cursor_location[0]
+        line = self.document.get_line(row)
+        self.app.copy_to_clipboard(line)
+        self.app.notify("Copied current line")
+
+    async def _on_key(self, event: events.Key) -> None:
+        if self.read_only:
+            await super()._on_key(event)
+            return
+
+        app = self.app
+        if isinstance(app, TermCodeApp) and app.is_completion_open_for(self):
+            if event.key == "down":
+                app.move_completion(1)
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key == "up":
+                app.move_completion(-1)
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key in ("tab", "enter"):
+                app.accept_completion(self)
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key == "escape":
+                app.hide_completions()
+                event.prevent_default()
+                event.stop()
+                return
+
+        if event.key == "enter":
+            row, col = self.cursor_location
+            line_before = self.document.get_line(row)[:col]
+            indent = compute_enter_indent(line_before, self.language)
+            self.insert("\n" + indent)
+            event.prevent_default()
+            event.stop()
+            return
+
+        if event.character == "}":
+            row, col = self.cursor_location
+            line_before = self.document.get_line(row)[:col]
+            dedent = compute_closing_brace_dedent(line_before)
+            if dedent > 0:
+                self.replace("}", (row, col - dedent), (row, col))
+                event.prevent_default()
+                event.stop()
+                return
+
+        await super()._on_key(event)
 
 
 class FilteredDirectoryTree(DirectoryTree):
@@ -150,8 +258,24 @@ class FilteredDirectoryTree(DirectoryTree):
         ]
 
 
+class TabButton(Button):
+    """Button representing an editor tab strip item."""
+
+    def __init__(
+        self,
+        label: str,
+        pane_id: str,
+        tab_index: int,
+        *,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(label, classes=classes)
+        self.pane_id = pane_id
+        self.tab_index = tab_index
+
+
 class TermCodeApp(App[None]):
-    """Lightweight VS Code-style terminal editor and runner for Python, C, and C++."""
+    """Lightweight VS Code-style terminal editor and runner for all major languages."""
 
     CSS_PATH = "styles.tcss"
     TITLE = "TermCode"
@@ -173,6 +297,9 @@ class TermCodeApp(App[None]):
         Binding("ctrl+up", "terminal_grow", "GrowTerm", show=False, priority=True),
         Binding("ctrl+down", "terminal_shrink", "ShrinkTerm", show=False, priority=True),
         Binding("f10", "copy_output", "CopyOut", show=False, priority=True),
+        Binding("f11", "next_tab", "NextTab", show=False, priority=True),
+        Binding("ctrl+w", "close_tab", "CloseTab", show=False, priority=True),
+        Binding("f12", "toggle_split", "Split", show=False, priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Files", priority=True),
         Binding("ctrl+j", "toggle_terminal", "Terminal", priority=True),
         Binding("ctrl+l", "clear_output", "Clear", show=False, priority=True),
@@ -188,23 +315,67 @@ class TermCodeApp(App[None]):
     ) -> None:
         super().__init__()
         self.workspace_root: Path | None = workspace_root.resolve() if workspace_root else None
-        self.active_file: Path | None = initial_file.resolve() if initial_file else None
-        self.selected_path: Path | None = self.active_file or self.workspace_root
-        self.is_dirty: bool = False
-        self._saved_content: str = ""
+        self._initial_file: Path | None = initial_file.resolve() if initial_file else None
+        self.selected_path: Path | None = self._initial_file or self.workspace_root
+        self.left_pane: EditorPaneState = EditorPaneState()
+        self.right_pane: EditorPaneState = EditorPaneState()
+        self.active_pane_id: str = "left"
+        self.is_split: bool = False
         self._suppress_dirty: bool = False
         self.runner: AsyncRunner = AsyncRunner()
         self.output_history: str = ""
         self.terminal_height: int = DEFAULT_TERMINAL_HEIGHT
         self._recent_store: Path | None = recent_store
         self._recent_folders: list[Path] = []
+        self._completion_editor: CodeTextArea | None = None
+        self._completion_prefix: str = ""
+        self._completion_items: list[str] = []
+        self._just_accepted_completion: bool = False
+
+    @property
+    def active_file(self) -> Path | None:
+        buf = self._active_pane().active_buffer
+        return buf.path if buf is not None else None
+
+    @active_file.setter
+    def active_file(self, value: Path | None) -> None:
+        buf = self._active_pane().active_buffer
+        if buf is not None:
+            buf.path = value.resolve() if value is not None else None
+
+    @property
+    def is_dirty(self) -> bool:
+        buf = self._active_pane().active_buffer
+        return buf.is_dirty if buf is not None else False
+
+    @is_dirty.setter
+    def is_dirty(self, value: bool) -> None:
+        buf = self._active_pane().active_buffer
+        if buf is not None and not value:
+            buf.saved_content = buf.content
+
+    def _pane_for_id(self, pane_id: str) -> EditorPaneState:
+        return self.right_pane if pane_id == "right" else self.left_pane
+
+    def _active_pane(self) -> EditorPaneState:
+        return self._pane_for_id(self.active_pane_id)
+
+    def _editor_for_pane(self, pane_id: str) -> CodeTextArea:
+        widget_id = "#editor-right" if pane_id == "right" else "#editor"
+        return self.query_one(widget_id, CodeTextArea)
+
+    def _active_editor(self) -> CodeTextArea:
+        return self._editor_for_pane(self.active_pane_id)
 
     def compose(self) -> ComposeResult:
         initial_tree_root = self.workspace_root or Path.home()
         with Horizontal(id="workspace-body"):
             with Vertical(id="sidebar"):
                 yield Static("EXPLORER", id="sidebar-title", markup=False)
-                yield Static("", id="sidebar-folder", markup=False)
+                with Horizontal(id="sidebar-folder-bar"):
+                    yield Static("", id="sidebar-folder", markup=False)
+                    yield Button("+F", id="sidebar-new-file-btn", classes="sidebar-tool-btn")
+                    yield Button("+D", id="sidebar-new-dir-btn", classes="sidebar-tool-btn")
                 with Vertical(id="no-folder-box"):
                     yield Static(
                         "You have not yet opened a folder.",
@@ -216,43 +387,64 @@ class TermCodeApp(App[None]):
                 yield FilteredDirectoryTree(str(initial_tree_root), id="file-tree")
 
             with Vertical(id="main-pane"):
-                with Horizontal(id="tab-bar"):
-                    yield Static("Home", id="active-tab", markup=False)
-                    yield Static("", id="tab-meta", markup=False)
+                with Horizontal(id="editors-row"):
+                    with Vertical(id="left-editor-col"):
+                        with Horizontal(id="tab-bar"):
+                            with Horizontal(id="left-tabs"):
+                                yield Static("Home", id="active-tab", markup=False)
+                            yield Static("", id="tab-meta", markup=False)
+                            yield Button("Split", id="split-toggle-btn", classes="term-tool-btn")
 
-                with Vertical(id="welcome-view"):
-                    with Vertical(id="welcome-card"):
-                        yield Static("TermCode", id="welcome-title", markup=False)
-                        yield Static(
-                            "Select a folder to open your workspace",
-                            id="welcome-subtitle",
-                            markup=False,
-                        )
-                        yield Button(
-                            "Open Folder   (Ctrl+O)",
-                            id="home-open-folder-btn",
-                        )
-                        with Vertical(id="home-recent-section"):
-                            yield Static("Recent Folders", classes="welcome-section-title", markup=False)
-                            yield OptionList(id="recent-list")
-                            yield Static(
-                                "No recent folders yet",
-                                id="recent-empty",
-                                markup=False,
-                            )
-                        yield Static(
-                            "Tip: run 'termcode' inside any project folder to open it directly.",
-                            id="welcome-tip",
-                            markup=False,
+                        with Vertical(id="welcome-view"):
+                            with Vertical(id="welcome-card"):
+                                yield Static("TermCode", id="welcome-title", markup=False)
+                                yield Static(
+                                    "Select a folder to open your workspace",
+                                    id="welcome-subtitle",
+                                    markup=False,
+                                )
+                                yield Button(
+                                    "Open Folder   (Ctrl+O)",
+                                    id="home-open-folder-btn",
+                                )
+                                with Vertical(id="home-recent-section"):
+                                    yield Static(
+                                        "Recent Folders",
+                                        classes="welcome-section-title",
+                                        markup=False,
+                                    )
+                                    yield OptionList(id="recent-list")
+                                    yield Static(
+                                        "No recent folders yet",
+                                        id="recent-empty",
+                                        markup=False,
+                                    )
+                                yield Static(
+                                    "Tip: run 'termcode' inside any project folder to open it directly.",
+                                    id="welcome-tip",
+                                    markup=False,
+                                )
+
+                        yield CodeTextArea.code_editor(
+                            "",
+                            language=None,
+                            theme="vscode_dark",
+                            show_line_numbers=True,
+                            id="editor",
                         )
 
-                yield CodeTextArea.code_editor(
-                    "",
-                    language=None,
-                    theme="vscode_dark",
-                    show_line_numbers=True,
-                    id="editor",
-                )
+                    with Vertical(id="right-editor-col"):
+                        with Horizontal(id="right-tab-bar"):
+                            with Horizontal(id="right-tabs"):
+                                pass
+                            yield Button("×", id="close-split-btn", classes="term-tool-btn")
+                        yield CodeTextArea.code_editor(
+                            "",
+                            language=None,
+                            theme="vscode_dark",
+                            show_line_numbers=True,
+                            id="editor-right",
+                        )
 
                 with Vertical(id="output-pane"):
                     with Horizontal(id="output-header-bar"):
@@ -279,25 +471,31 @@ class TermCodeApp(App[None]):
                         id="stdin-input",
                     )
 
+        yield OptionList(id="completion-popup")
         with Horizontal(id="status-bar"):
             yield Static("", id="status-left", markup=False)
             yield Static("", id="status-right", markup=False)
 
     def on_mount(self) -> None:
         self.query_one("#stdin-input", Input).display = False
+        self.query_one("#right-editor-col").display = False
+        self.query_one("#completion-popup").display = False
         self._refresh_recent_list()
 
         if self.workspace_root is not None:
             record_recent_folder(self.workspace_root, store_path=self._recent_store)
             self._sync_workspace_ui(show_welcome=False)
-            if self.active_file is not None:
-                if not self.load_file(self.active_file):
-                    self.active_file = None
+            if self._initial_file is not None:
+                if not self.load_file(self._initial_file):
+                    self.left_pane.ensure_untitled()
                     self.selected_path = self.workspace_root
+                    self._render_pane("left")
                     self._update_chrome()
             else:
+                self.left_pane.ensure_untitled()
+                self._render_pane("left")
                 self._update_chrome()
-                self.query_one("#editor", TextArea).focus()
+                self.query_one("#editor", CodeTextArea).focus()
         else:
             self._sync_workspace_ui(show_welcome=True)
             self._update_chrome()
@@ -310,14 +508,18 @@ class TermCodeApp(App[None]):
         has_folder = self.workspace_root is not None
         self.query_one("#no-folder-box").display = not has_folder
         self.query_one("#file-tree").display = has_folder
-        folder_label = self.query_one("#sidebar-folder", Static)
-        folder_label.display = has_folder
+        folder_bar = self.query_one("#sidebar-folder-bar")
+        folder_bar.display = has_folder
         if self.workspace_root is not None:
-            folder_label.update(self.workspace_root.name.upper())
+            self.query_one("#sidebar-folder", Static).update(self.workspace_root.name.upper())
 
         self.query_one("#welcome-view").display = show_welcome
         self.query_one("#editor").display = not show_welcome
         self.query_one("#output-pane").display = not show_welcome
+        self.query_one("#split-toggle-btn").display = not show_welcome
+        if show_welcome and self.is_split:
+            self.is_split = False
+            self.query_one("#right-editor-col").display = False
 
     def _refresh_recent_list(self) -> None:
         self._recent_folders = load_recent_folders(store_path=self._recent_store)
@@ -338,52 +540,144 @@ class TermCodeApp(App[None]):
                 display_path = str(folder)
             recent_list.add_option(Option(f"{folder.name}  ({display_path})", id=str(idx)))
 
-    def _apply_editor_language(self, path: Path | None) -> None:
-        editor = self.query_one("#editor", TextArea)
+    def _apply_editor_language(self, editor: CodeTextArea, path: Path | None) -> None:
         wanted = editor_language_for_path(path)
         if wanted and wanted in editor.available_languages:
             editor.language = wanted
         else:
             editor.language = None
 
+    def _sync_buffer_from_editor(self, pane_id: str) -> None:
+        pane = self._pane_for_id(pane_id)
+        buf = pane.active_buffer
+        if buf is None:
+            return
+        editor = self._editor_for_pane(pane_id)
+        buf.content = editor.text
+        buf.cursor = editor.cursor_location
+
+    def _rebuild_tab_strip(self, pane_id: str) -> None:
+        container_id = "#right-tabs" if pane_id == "right" else "#left-tabs"
+        try:
+            container = self.query_one(container_id, Horizontal)
+        except Exception:
+            return
+
+        pane = self._pane_for_id(pane_id)
+        on_welcome = pane_id == "left" and self.query_one("#welcome-view").display
+
+        if pane_id == "left":
+            try:
+                home_tab = self.query_one("#active-tab", Static)
+                home_tab.display = on_welcome
+                if on_welcome:
+                    home_tab.update("Home")
+            except Exception:
+                pass
+
+        if on_welcome:
+            for child in list(container.children):
+                if child.id != "active-tab":
+                    child.remove()
+            return
+
+        if pane_id == "right":
+            try:
+                self.query_one("#right-active-tab", Static).display = False
+            except Exception:
+                pass
+
+        existing_buttons = [
+            c
+            for c in container.children
+            if isinstance(c, TabButton)
+        ]
+        num_tabs = len(pane.tabs)
+        num_existing = len(existing_buttons)
+
+        # Update matching buttons in place
+        for idx in range(min(num_tabs, num_existing)):
+            buf = pane.tabs[idx]
+            dot = " ●" if buf.is_dirty else ""
+            btn = existing_buttons[idx]
+            btn.label = f"{buf.title}{dot}"
+            btn.pane_id = pane_id
+            btn.tab_index = idx
+            btn.set_class(idx == pane.active_index, "-active")
+
+        # Mount extra buttons if more tabs than existing buttons
+        if num_tabs > num_existing:
+            for idx in range(num_existing, num_tabs):
+                buf = pane.tabs[idx]
+                dot = " ●" if buf.is_dirty else ""
+                classes = "editor-tab-btn -active" if idx == pane.active_index else "editor-tab-btn"
+                btn = TabButton(f"{buf.title}{dot}", pane_id, idx, classes=classes)
+                container.mount(btn)
+
+        # Remove extra buttons if fewer tabs than existing buttons
+        elif num_existing > num_tabs:
+            for idx in range(num_tabs, num_existing):
+                existing_buttons[idx].remove()
+
+    def _render_pane(self, pane_id: str) -> None:
+        pane = self._pane_for_id(pane_id)
+        editor = self._editor_for_pane(pane_id)
+        buf = pane.active_buffer
+
+        self._suppress_dirty = True
+        try:
+            if buf is None:
+                editor.text = ""
+                editor.language = None
+            else:
+                editor.text = buf.content
+                self._apply_editor_language(editor, buf.path)
+                try:
+                    editor.cursor_location = buf.cursor
+                except Exception:
+                    pass
+        finally:
+            self._suppress_dirty = False
+
+        self._rebuild_tab_strip(pane_id)
+
     def _update_chrome(self) -> None:
-        tab = self.query_one("#active-tab", Static)
         meta = self.query_one("#tab-meta", Static)
         status_left = self.query_one("#status-left", Static)
         status_right = self.query_one("#status-right", Static)
-        editor = self.query_one("#editor", TextArea)
         on_welcome = self.query_one("#welcome-view").display
 
         if on_welcome:
-            tab.update("Home")
+            self._rebuild_tab_strip("left")
             meta.update("No Folder Opened" if self.workspace_root is None else str(self.workspace_root))
         else:
-            if self.active_file is not None:
-                title = self.active_file.name
+            self._rebuild_tab_strip("left")
+            if self.is_split:
+                self._rebuild_tab_strip("right")
+            active_path = self.active_file
+            if active_path is not None:
                 if self.workspace_root is not None:
                     try:
-                        rel = self.active_file.relative_to(self.workspace_root).as_posix()
+                        rel = active_path.relative_to(self.workspace_root).as_posix()
                     except ValueError:
-                        rel = str(self.active_file)
+                        rel = str(active_path)
                 else:
-                    rel = str(self.active_file)
+                    rel = str(active_path)
             else:
-                title = "Untitled"
                 rel = str(self.workspace_root) if self.workspace_root else "Not saved"
-            dirty_dot = " ●" if self.is_dirty else ""
-            tab.update(f"{title}{dirty_dot}")
             meta.update(rel)
 
         folder_part = self.workspace_root.name if self.workspace_root else "No Folder"
         status_left.update(
-            f"{folder_part}  ·  ^K Menu  ·  F5 Run  ·  ^S Save  ·  ^O Folder  ·  ^J Terminal"
+            f"{folder_part}  ·  ^K Menu  ·  F5 Run  ·  ^S Save  ·  F12 Split  ·  ^J Terminal"
         )
 
-        row, col = editor.cursor_location
-        lang_label = language_label_for_path(self.active_file) if not on_welcome else "Welcome"
         if on_welcome:
             status_right.update("TermCode")
         else:
+            editor = self._active_editor()
+            row, col = editor.cursor_location
+            lang_label = language_label_for_path(self.active_file)
             status_right.update(f"Ln {row + 1}, Col {col + 1}  ·  UTF-8  ·  {lang_label}")
 
     def _refresh_tree(self) -> None:
@@ -418,6 +712,8 @@ class TermCodeApp(App[None]):
             return self.active_file
         return None
 
+    # ---- Clipboard & Terminal ----
+
     def copy_to_clipboard(self, text: str) -> None:
         super().copy_to_clipboard(text)
         _copy_to_os_clipboard(text)
@@ -427,8 +723,7 @@ class TermCodeApp(App[None]):
         max_h = max(MIN_TERMINAL_HEIGHT + 2, self.size.height - 9) if self.size.height else 30
         clamped = max(MIN_TERMINAL_HEIGHT, min(height, max_h))
         self.terminal_height = clamped
-        out_pane = self.query_one("#output-pane")
-        out_pane.styles.height = clamped
+        self.query_one("#output-pane").styles.height = clamped
 
     def append_output(self, text: str) -> None:
         """Append text chunk to the selectable Terminal output and bounded history."""
@@ -440,13 +735,103 @@ class TermCodeApp(App[None]):
         self.output_history += clean
         if len(self.output_history) > MAX_OUTPUT_HISTORY_CHARS:
             self.output_history = self.output_history[-MAX_OUTPUT_HISTORY_CHARS:]
-        log = self.query_one("#output-log", TextArea)
+        log = self.query_one("#output-log", CodeTextArea)
         log.load_text(self.output_history)
         log.scroll_end(animate=False)
 
-    def load_file(self, path: Path) -> bool:
-        """Load a text file into the editor, rejecting binary or oversized files."""
+    # ---- Inline Autocomplete Popup ----
+
+    def is_completion_open_for(self, editor: CodeTextArea) -> bool:
+        popup = self.query_one("#completion-popup", OptionList)
+        return bool(popup.display and self._completion_editor is editor and self._completion_items)
+
+    def hide_completions(self) -> None:
+        popup = self.query_one("#completion-popup", OptionList)
+        popup.display = False
+        self._completion_editor = None
+        self._completion_prefix = ""
+        self._completion_items = []
+
+    def _update_completions(self, editor: CodeTextArea) -> None:
+        if editor.read_only or not self._on_main_screen():
+            self.hide_completions()
+            return
+        row, col = editor.cursor_location
+        line = editor.document.get_line(row)
+        prefix = extract_prefix(line, col)
+        items = get_completions(prefix, editor.language, editor.text, limit=7)
+        if not items:
+            self.hide_completions()
+            return
+
+        popup = self.query_one("#completion-popup", OptionList)
+        popup.clear_options()
+        for word in items:
+            popup.add_option(Option(word, id=word))
+        popup.highlighted = 0
+
+        cx, cy = editor.cursor_screen_offset
+        popup_h = min(len(items) + 2, 9)
+        max_x = max(0, self.size.width - 34)
+        max_y = max(0, self.size.height - popup_h - 2)
+        pos_x = max(0, min(cx, max_x))
+        pos_y = cy + 1 if (cy + 1) <= max_y else max(0, cy - popup_h)
+        popup.styles.offset = (pos_x, pos_y)
+        popup.display = True
+
+        self._completion_editor = editor
+        self._completion_prefix = prefix
+        self._completion_items = items
+
+    def move_completion(self, delta: int) -> None:
+        popup = self.query_one("#completion-popup", OptionList)
+        if not self._completion_items:
+            return
+        cur = popup.highlighted if popup.highlighted is not None else 0
+        popup.highlighted = (cur + delta) % len(self._completion_items)
+
+    def accept_completion(self, editor: CodeTextArea | None = None) -> None:
+        target = editor or self._completion_editor
+        if target is None or not self._completion_items:
+            self.hide_completions()
+            return
+        popup = self.query_one("#completion-popup", OptionList)
+        idx = popup.highlighted if popup.highlighted is not None else 0
+        if not (0 <= idx < len(self._completion_items)):
+            self.hide_completions()
+            return
+        word = self._completion_items[idx]
+        prefix = self._completion_prefix
+        row, col = target.cursor_location
+        start_col = max(0, col - len(prefix))
+        self.hide_completions()
+        self._just_accepted_completion = True
+        target.replace(word, (row, start_col), (row, col))
+        target.focus()
+
+    # ---- File & Buffer Operations ----
+
+    def load_file(self, path: Path, *, pane_id: str | None = None) -> bool:
+        """Open a text file as a tab in the target (or active) pane."""
         resolved = path.resolve()
+        target_pane_id = pane_id or self.active_pane_id
+        pane = self._pane_for_id(target_pane_id)
+
+        # Save edits of current tab in this pane before switching
+        self._sync_buffer_from_editor(target_pane_id)
+
+        # If already open in this pane, just focus its existing tab (preserving edits)
+        existing_idx = pane.index_of_path(resolved)
+        if existing_idx is not None:
+            self._sync_workspace_ui(show_welcome=False)
+            pane.select_tab(existing_idx)
+            self.active_pane_id = target_pane_id
+            self.selected_path = resolved
+            self._render_pane(target_pane_id)
+            self._update_chrome()
+            self._editor_for_pane(target_pane_id).focus()
+            return True
+
         try:
             content = read_text_file(resolved)
         except WorkspaceError as exc:
@@ -454,20 +839,12 @@ class TermCodeApp(App[None]):
             return False
 
         self._sync_workspace_ui(show_welcome=False)
-        editor = self.query_one("#editor", TextArea)
-        self._suppress_dirty = True
-        try:
-            editor.text = content
-            self._apply_editor_language(resolved)
-        finally:
-            self._suppress_dirty = False
-
-        self.active_file = resolved
+        pane.open_file(resolved, content)
+        self.active_pane_id = target_pane_id
         self.selected_path = resolved
-        self._saved_content = content
-        self.is_dirty = False
+        self._render_pane(target_pane_id)
         self._update_chrome()
-        editor.focus()
+        self._editor_for_pane(target_pane_id).focus()
         return True
 
     def _open_workspace_folder(self, candidate: Path) -> None:
@@ -479,59 +856,95 @@ class TermCodeApp(App[None]):
         def _do_switch() -> None:
             self.workspace_root = resolved
             self.selected_path = resolved
-            self.active_file = None
-            editor = self.query_one("#editor", TextArea)
-            self._suppress_dirty = True
-            try:
-                editor.text = ""
-                editor.language = None
-            finally:
-                self._suppress_dirty = False
-            self._saved_content = ""
-            self.is_dirty = False
+            self.left_pane.clear()
+            self.right_pane.clear()
+            self.is_split = False
+            self.active_pane_id = "left"
+            self.query_one("#right-editor-col").display = False
+            self.left_pane.ensure_untitled()
             record_recent_folder(resolved, store_path=self._recent_store)
             self._refresh_recent_list()
             self._sync_workspace_ui(show_welcome=False)
+            self._render_pane("left")
             self._refresh_tree()
             self._update_chrome()
-            editor.focus()
+            self.query_one("#editor", CodeTextArea).focus()
             self.notify(f"Opened {resolved.name}/")
 
-        self._guard_unsaved(_do_switch)
+        self._guard_all_unsaved(_do_switch)
 
-    def _guard_unsaved(self, on_continue: Callable[[], None]) -> None:
+    def _guard_unsaved(self, on_continue: Callable[[], None], *, buf: OpenBuffer | None = None) -> None:
         """Prompt to save/discard before leaving a dirty buffer, then run on_continue."""
-        if not self.is_dirty:
+        self._sync_buffer_from_editor(self.active_pane_id)
+        target_buf = buf if buf is not None else self._active_pane().active_buffer
+        if target_buf is None or not target_buf.is_dirty:
             on_continue()
             return
 
-        name = self.active_file.name if self.active_file else "Untitled"
-
         def _after_choice(choice: str | None) -> None:
             if choice == "discard":
-                self.is_dirty = False
+                target_buf.saved_content = target_buf.content
                 on_continue()
             elif choice == "save":
                 self._save_current(after_save=on_continue)
 
-        self.push_screen(UnsavedChangesModal(name), _after_choice)
+        self.push_screen(UnsavedChangesModal(target_buf.title), _after_choice)
+
+    def _guard_all_unsaved(self, on_continue: Callable[[], None]) -> None:
+        """Prompt if any open tab across left or right pane has unsaved edits."""
+        self._sync_buffer_from_editor("left")
+        if self.is_split:
+            self._sync_buffer_from_editor("right")
+        dirty_bufs = [
+            b for b in (*self.left_pane.tabs, *self.right_pane.tabs) if b.is_dirty
+        ]
+        if not dirty_bufs:
+            on_continue()
+            return
+
+        label = dirty_bufs[0].title if len(dirty_bufs) == 1 else f"{len(dirty_bufs)} unsaved files"
+
+        def _after_choice(choice: str | None) -> None:
+            if choice == "discard":
+                for b in dirty_bufs:
+                    b.saved_content = b.content
+                on_continue()
+            elif choice == "save":
+                # Save all named dirty buffers; prompt if active buffer is untitled
+                for b in dirty_bufs:
+                    if b.path is not None:
+                        try:
+                            write_text_file(b.path, b.content)
+                            b.mark_saved()
+                        except WorkspaceError as exc:
+                            self.notify(str(exc), severity="error")
+                            return
+                remaining_untitled = [b for b in dirty_bufs if b.is_dirty]
+                if remaining_untitled:
+                    self._prompt_save_as(title="Save File", after_save=on_continue)
+                else:
+                    self._update_chrome()
+                    on_continue()
+
+        self.push_screen(UnsavedChangesModal(label), _after_choice)
 
     def _save_current(self, *, after_save: Callable[[], None] | None = None) -> None:
-        if self.active_file is None:
+        self._sync_buffer_from_editor(self.active_pane_id)
+        pane = self._active_pane()
+        buf = pane.ensure_untitled()
+        if buf.path is None:
             self._prompt_save_as(title="Save File", after_save=after_save)
             return
 
-        editor = self.query_one("#editor", TextArea)
         try:
-            write_text_file(self.active_file, editor.text)
+            write_text_file(buf.path, buf.content)
         except WorkspaceError as exc:
             self.notify(str(exc), severity="error")
             return
 
-        self._saved_content = editor.text
-        self.is_dirty = False
+        buf.mark_saved()
         self._update_chrome()
-        self.notify(f"Saved {self.active_file.name}")
+        self.notify(f"Saved {buf.path.name}")
         if after_save is not None:
             after_save()
 
@@ -542,7 +955,10 @@ class TermCodeApp(App[None]):
         after_save: Callable[[], None] | None = None,
     ) -> None:
         target_dir = self._target_dir_for_create()
-        initial = self.active_file.name if self.active_file else ""
+        pane_id = self.active_pane_id
+        pane = self._pane_for_id(pane_id)
+        buf = pane.ensure_untitled()
+        initial = buf.path.name if buf.path else ""
 
         def _handle_name(raw_name: str | None) -> None:
             if raw_name is None:
@@ -557,25 +973,23 @@ class TermCodeApp(App[None]):
             dest = dest.resolve()
 
             def _commit_save() -> None:
-                editor = self.query_one("#editor", TextArea)
+                self._sync_buffer_from_editor(pane_id)
                 try:
-                    write_text_file(dest, editor.text)
+                    write_text_file(dest, buf.content)
                 except WorkspaceError as exc:
                     self.notify(str(exc), severity="error")
                     return
 
-                self.active_file = dest
+                buf.mark_saved(dest)
                 self.selected_path = dest
-                self._saved_content = editor.text
-                self.is_dirty = False
-                self._apply_editor_language(dest)
+                self._apply_editor_language(self._editor_for_pane(pane_id), dest)
                 self._update_chrome()
                 self._refresh_tree()
                 self.notify(f"Saved {dest.name}")
                 if after_save is not None:
                     after_save()
 
-            if dest.exists() and (self.active_file is None or dest != self.active_file.resolve()):
+            if dest.exists() and (buf.path is None or dest != buf.path.resolve()):
                 def _on_overwrite(confirmed: bool | None) -> None:
                     if confirmed:
                         _commit_save()
@@ -604,6 +1018,17 @@ class TermCodeApp(App[None]):
 
     # ---- Events ----
 
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        wid = event.widget.id
+        if wid == "editor":
+            self.active_pane_id = "left"
+            self._update_chrome()
+        elif wid == "editor-right":
+            self.active_pane_id = "right"
+            self._update_chrome()
+        elif wid != "completion-popup":
+            self.hide_completions()
+
     def on_key(self, event: events.Key) -> None:
         if not self._on_main_screen():
             return
@@ -618,9 +1043,19 @@ class TermCodeApp(App[None]):
             self.action_open_palette()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        btn_id = event.button.id
+        if isinstance(event.button, TabButton):
+            self._switch_to_tab(event.button.pane_id, event.button.tab_index)
+            return
+
+        btn_id = event.button.id or ""
         if btn_id in ("sidebar-open-folder-btn", "home-open-folder-btn"):
             self.action_open_folder()
+        elif btn_id == "sidebar-new-file-btn":
+            self.action_new_file()
+        elif btn_id == "sidebar-new-dir-btn":
+            self.action_new_folder()
+        elif btn_id in ("split-toggle-btn", "close-split-btn"):
+            self.action_toggle_split()
         elif btn_id == "term-grow-btn":
             self.action_terminal_grow()
         elif btn_id == "term-shrink-btn":
@@ -629,23 +1064,48 @@ class TermCodeApp(App[None]):
             self.action_copy_output()
         elif btn_id == "term-clear-btn":
             self.action_clear_output()
+        elif btn_id.startswith("tab-left-"):
+            idx = int(btn_id.removeprefix("tab-left-"))
+            self._switch_to_tab("left", idx)
+        elif btn_id.startswith("tab-right-"):
+            idx = int(btn_id.removeprefix("tab-right-"))
+            self._switch_to_tab("right", idx)
+
+    def _switch_to_tab(self, pane_id: str, index: int) -> None:
+        self.hide_completions()
+        self._sync_buffer_from_editor(pane_id)
+        pane = self._pane_for_id(pane_id)
+        if pane.select_tab(index) is not None:
+            self.active_pane_id = pane_id
+            self._render_pane(pane_id)
+            self._update_chrome()
+            self._editor_for_pane(pane_id).focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "recent-list" and event.option_id is not None:
             idx = int(event.option_id)
             if 0 <= idx < len(self._recent_folders):
                 self._open_workspace_folder(self._recent_folders[idx])
+        elif event.option_list.id == "completion-popup":
+            self.accept_completion()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area.id != "editor" or self._suppress_dirty:
+        if event.text_area.id not in ("editor", "editor-right") or self._suppress_dirty:
             return
-        dirty_now = event.text_area.text != self._saved_content
-        if dirty_now != self.is_dirty:
-            self.is_dirty = dirty_now
+        pane_id = "right" if event.text_area.id == "editor-right" else "left"
+        pane = self._pane_for_id(pane_id)
+        buf = pane.ensure_untitled()
+        buf.content = event.text_area.text
+        buf.cursor = event.text_area.cursor_location
         self._update_chrome()
+        if isinstance(event.text_area, CodeTextArea):
+            if self._just_accepted_completion:
+                self._just_accepted_completion = False
+            else:
+                self._update_completions(event.text_area)
 
     def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
-        if event.text_area.id == "editor":
+        if event.text_area.id in ("editor", "editor-right"):
             self._update_chrome()
 
     def on_tree_node_highlighted(self, event: DirectoryTree.NodeHighlighted) -> None:
@@ -661,8 +1121,7 @@ class TermCodeApp(App[None]):
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
         self.selected_path = event.path
-        target = event.path
-        self._guard_unsaved(lambda: self.load_file(target))
+        self.load_file(event.path)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "stdin-input":
@@ -679,6 +1138,7 @@ class TermCodeApp(App[None]):
     def action_open_palette(self) -> None:
         if not self._on_main_screen():
             return
+        self.hide_completions()
 
         def _dispatch(action_name: str | None) -> None:
             if not action_name:
@@ -714,6 +1174,7 @@ class TermCodeApp(App[None]):
         if self.runner.is_running:
             self.notify("A program is already running. Press F7 (/stop) to stop it.", severity="warning")
             return
+        self._sync_buffer_from_editor(self.active_pane_id)
         if self.active_file is None or self.is_dirty:
             self._save_current(after_save=self._start_run_worker)
         else:
@@ -764,7 +1225,7 @@ class TermCodeApp(App[None]):
             stdin_input.disabled = True
             stdin_input.display = False
             if self._on_main_screen() and self.query_one("#editor").display:
-                self.query_one("#editor", TextArea).focus()
+                self._active_editor().focus()
 
     def action_stop_run(self) -> None:
         if not self._on_main_screen():
@@ -781,11 +1242,13 @@ class TermCodeApp(App[None]):
     def action_new_file(self) -> None:
         if not self._on_main_screen():
             return
+        self.hide_completions()
         if self.workspace_root is None:
-            # Open an untitled scratch editor immediately when no folder is open
             self._sync_workspace_ui(show_welcome=False)
+            self.left_pane.ensure_untitled()
+            self._render_pane("left")
             self._update_chrome()
-            self.query_one("#editor", TextArea).focus()
+            self.query_one("#editor", CodeTextArea).focus()
             return
 
         base_dir = self._target_dir_for_create()
@@ -799,7 +1262,7 @@ class TermCodeApp(App[None]):
                 self.notify(str(exc), severity="error")
                 return
             self._refresh_tree()
-            self._guard_unsaved(lambda: self.load_file(created))
+            self.load_file(created)
 
         self.push_screen(
             TextInputModal(
@@ -854,7 +1317,7 @@ class TermCodeApp(App[None]):
 
         def _picked(path: Path | None) -> None:
             if path is not None:
-                self._guard_unsaved(lambda: self.load_file(path))
+                self.load_file(path)
 
         self.push_screen(FilePickerModal(self.workspace_root, files), _picked)
 
@@ -887,14 +1350,20 @@ class TermCodeApp(App[None]):
                 self.notify(str(exc), severity="error")
                 return
 
-            if self.active_file is not None:
-                active_res = self.active_file.resolve()
-                if active_res == old_path:
-                    self.active_file = renamed
-                    self._apply_editor_language(renamed)
-                elif _is_within(active_res, old_path):
-                    rel = active_res.relative_to(old_path)
-                    self.active_file = renamed / rel
+            self._sync_buffer_from_editor("left")
+            if self.is_split:
+                self._sync_buffer_from_editor("right")
+            self.left_pane.handle_rename(old_path, renamed)
+            self.right_pane.handle_rename(old_path, renamed)
+
+            if self.left_pane.active_buffer is not None:
+                self._apply_editor_language(
+                    self._editor_for_pane("left"), self.left_pane.active_buffer.path
+                )
+            if self.is_split and self.right_pane.active_buffer is not None:
+                self._apply_editor_language(
+                    self._editor_for_pane("right"), self.right_pane.active_buffer.path
+                )
 
             self.selected_path = renamed
             self._refresh_tree()
@@ -931,14 +1400,20 @@ class TermCodeApp(App[None]):
                 self.notify(str(exc), severity="error")
                 return
 
-            if self.active_file is not None:
-                active_res = self.active_file.resolve()
-                if active_res == old_path or _is_within(active_res, old_path):
-                    self.active_file = None
-                    self._saved_content = ""
-                    editor = self.query_one("#editor", TextArea)
-                    self.is_dirty = bool(editor.text)
-                    self._apply_editor_language(None)
+            self._sync_buffer_from_editor("left")
+            if self.is_split:
+                self._sync_buffer_from_editor("right")
+            self.left_pane.handle_delete(old_path)
+            self.right_pane.handle_delete(old_path)
+
+            if self.left_pane.active_buffer is not None:
+                self._apply_editor_language(
+                    self._editor_for_pane("left"), self.left_pane.active_buffer.path
+                )
+            if self.is_split and self.right_pane.active_buffer is not None:
+                self._apply_editor_language(
+                    self._editor_for_pane("right"), self.right_pane.active_buffer.path
+                )
 
             if self.selected_path is not None and (
                 self.selected_path.resolve() == old_path
@@ -958,6 +1433,82 @@ class TermCodeApp(App[None]):
             ),
             _do_delete,
         )
+
+    def action_next_tab(self) -> None:
+        if not self._on_main_screen() or self.query_one("#welcome-view").display:
+            return
+        pane_id = self.active_pane_id
+        pane = self._pane_for_id(pane_id)
+        if len(pane.tabs) < 2:
+            return
+        self.hide_completions()
+        self._sync_buffer_from_editor(pane_id)
+        pane.next_tab()
+        self._render_pane(pane_id)
+        self._update_chrome()
+        self._editor_for_pane(pane_id).focus()
+
+    def action_close_tab(self) -> None:
+        if not self._on_main_screen() or self.query_one("#welcome-view").display:
+            return
+        pane_id = self.active_pane_id
+        pane = self._pane_for_id(pane_id)
+        buf = pane.active_buffer
+        if buf is None:
+            return
+
+        def _do_close() -> None:
+            pane.close_tab(pane.active_index)
+            if pane_id == "right" and not pane.tabs:
+                self.is_split = False
+                self.query_one("#right-editor-col").display = False
+                self.active_pane_id = "left"
+                self._update_chrome()
+                self._editor_for_pane("left").focus()
+                return
+            if not pane.tabs:
+                pane.ensure_untitled()
+            self._render_pane(pane_id)
+            self._update_chrome()
+            self._editor_for_pane(pane_id).focus()
+
+        self._guard_unsaved(_do_close, buf=buf)
+
+    def action_toggle_split(self) -> None:
+        if not self._on_main_screen() or self.query_one("#welcome-view").display:
+            return
+        self.hide_completions()
+        right_col = self.query_one("#right-editor-col")
+        if not self.is_split:
+            self._sync_buffer_from_editor("left")
+            self.is_split = True
+            right_col.display = True
+            if not self.right_pane.tabs:
+                # Open a fresh untitled tab (or copy active file reference if 1 tab)
+                if len(self.left_pane.tabs) >= 2:
+                    # Move the inactive neighbor tab to the right pane for instant side-by-side
+                    other_idx = (self.left_pane.active_index + 1) % len(self.left_pane.tabs)
+                    moved = self.left_pane.close_tab(other_idx)
+                    if moved is not None:
+                        self.right_pane.tabs.append(moved)
+                        self.right_pane.active_index = 0
+                else:
+                    self.right_pane.ensure_untitled()
+            self._render_pane("left")
+            self._render_pane("right")
+            self.active_pane_id = "right"
+            self._update_chrome()
+            self._editor_for_pane("right").focus()
+        else:
+            self._sync_buffer_from_editor("left")
+            self._sync_buffer_from_editor("right")
+            self.left_pane.merge_from(self.right_pane)
+            self.is_split = False
+            right_col.display = False
+            self.active_pane_id = "left"
+            self._render_pane("left")
+            self._update_chrome()
+            self._editor_for_pane("left").focus()
 
     def action_toggle_sidebar(self) -> None:
         if not self._on_main_screen():
@@ -999,20 +1550,22 @@ class TermCodeApp(App[None]):
     def action_copy_output(self) -> None:
         if not self._on_main_screen():
             return
-        log = self.query_one("#output-log", TextArea)
-        text = log.selected_text or self.output_history
-        if not text:
+        log = self.query_one("#output-log", CodeTextArea)
+        if log.selected_text:
+            self.copy_to_clipboard(log.selected_text)
+            self.notify(f"Copied selection ({len(log.selected_text)} chars)")
+            return
+        if not self.output_history:
             self.notify("Terminal output is empty.")
             return
-        self.copy_to_clipboard(text)
-        label = "selection" if log.selected_text else "terminal output"
-        self.notify(f"Copied {label} to clipboard")
+        self.copy_to_clipboard(self.output_history)
+        self.notify("Copied all terminal output")
 
     def action_clear_output(self) -> None:
         if not self._on_main_screen():
             return
         self.output_history = ""
-        self.query_one("#output-log", TextArea).load_text("")
+        self.query_one("#output-log", CodeTextArea).load_text("")
 
     def action_request_quit(self) -> None:
         if not self._on_main_screen():
@@ -1021,7 +1574,7 @@ class TermCodeApp(App[None]):
         def _finish_quit() -> None:
             self._shutdown_and_exit()
 
-        self._guard_unsaved(_finish_quit)
+        self._guard_all_unsaved(_finish_quit)
 
     @work
     async def _shutdown_and_exit(self) -> None:
