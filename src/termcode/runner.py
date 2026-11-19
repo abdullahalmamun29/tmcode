@@ -664,3 +664,62 @@ class AsyncRunner:
                         proc.kill()
                     except ProcessLookupError:
                         pass
+
+
+def user_shell_command(env: Mapping[str, str] | None = None) -> list[str]:
+    """The user's interactive shell: $SHELL on Unix, %COMSPEC% on Windows."""
+    environ = os.environ if env is None else env
+    if sys.platform == "win32":
+        return [environ.get("COMSPEC") or "cmd.exe"]
+    shell = environ.get("SHELL")
+    if shell:
+        return [shell]
+    return [shutil.which("bash") or "/bin/sh"]
+
+
+def wait_ignoring_ctrl_c(proc: subprocess.Popen[bytes]) -> tuple[int, bool]:
+    """Wait for a child that shares our terminal; returns (exit_code, saw_ctrl_c).
+
+    Ctrl+C reaches both TermCode and the child. TermCode must survive it, so
+    the KeyboardInterrupt is swallowed and the child decides whether to exit.
+    """
+    interrupted = False
+    while True:
+        try:
+            return proc.wait(), interrupted
+        except KeyboardInterrupt:
+            interrupted = True
+
+
+def run_in_foreground(source: Path, workspace_root: Path) -> RunResult:
+    """Compile (if needed) and run source with the real terminal (blocking).
+
+    Used by Shift+F5 while the TUI is suspended, so the program gets a true
+    TTY: colors, \\r progress bars, curses and single-key input all work.
+    Ctrl+C stops the program and is reported as cancelled.
+    """
+    start = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="termcode_") as tmp:
+        plan = build_run_plan(source, workspace_root, Path(tmp))
+
+        def _wait(proc: subprocess.Popen[bytes]) -> tuple[int, bool]:
+            rc, interrupted = wait_ignoring_ctrl_c(proc)
+            return rc, interrupted
+
+        if plan.compile_cmd is not None:
+            compile_rc, cancelled = _wait(subprocess.Popen(plan.compile_cmd, cwd=plan.cwd))
+            if cancelled or compile_rc != 0:
+                return RunResult(
+                    exit_code=compile_rc,
+                    duration_seconds=time.monotonic() - start,
+                    cancelled=cancelled,
+                    compile_failed=not cancelled,
+                )
+
+        rc, cancelled = _wait(subprocess.Popen(plan.run_cmd, cwd=plan.cwd))
+        return RunResult(
+            exit_code=rc,
+            duration_seconds=time.monotonic() - start,
+            cancelled=cancelled,
+            compile_failed=False,
+        )

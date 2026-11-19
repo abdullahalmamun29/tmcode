@@ -8,12 +8,14 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 from rich.text import Text
 from textual import events, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Button, DirectoryTree, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
@@ -24,6 +26,9 @@ from termcode.completions import (
     extract_prefix,
     get_completions,
 )
+from termcode import __version__, theme
+from termcode.findbar import FindBar
+from termcode.formatting import format_code
 from termcode.highlighting import register_extra_languages
 from termcode.modals import (
     CommandPaletteModal,
@@ -33,12 +38,17 @@ from termcode.modals import (
     TextInputModal,
     UnsavedChangesModal,
 )
+from termcode.search import parse_goto
 from termcode.runner import (
     AsyncRunner,
+    RunResult,
     RunnerError,
     build_run_plan,
     editor_language_for_path,
     language_label_for_path,
+    run_in_foreground,
+    user_shell_command,
+    wait_ignoring_ctrl_c,
 )
 from termcode.workspace import (
     IGNORED_DIRS,
@@ -46,6 +56,7 @@ from termcode.workspace import (
     create_file,
     create_folder,
     delete_path,
+    current_git_branch,
     list_workspace_files,
     load_recent_folders,
     read_text_file,
@@ -57,6 +68,13 @@ from termcode.workspace import (
 MAX_OUTPUT_HISTORY_CHARS = 500_000
 MIN_TERMINAL_HEIGHT = 4
 DEFAULT_TERMINAL_HEIGHT = 10
+OUTPUT_FLUSH_INTERVAL = 1 / 30
+DEFAULT_SIDEBAR_WIDTH = 30
+MIN_SIDEBAR_WIDTH = 16
+MAX_SIDEBAR_WIDTH = 60
+# Dragging a panel smaller than this collapses it (VS Code behaviour).
+COLLAPSE_SIDEBAR_BELOW = 10
+COLLAPSE_TERMINAL_BELOW = 3
 
 _GTK_CLIPBOARD_SCRIPT = (
     "import sys, gi\n"
@@ -132,7 +150,28 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
-class TerminalResizeHandle(Static):
+class ResizeHover:
+    """Mixin for drag handles: highlighted look (thick line + grip) while hovered or dragged.
+
+    The resize mouse pointer itself comes from the `pointer:` rule in styles.tcss.
+    """
+
+    _dragging: bool
+
+    def on_enter(self, event: events.Enter) -> None:
+        self.add_class("-hover")  # type: ignore[attr-defined]
+        self.refresh()  # type: ignore[attr-defined]
+
+    def on_leave(self, event: events.Leave) -> None:
+        if not self._dragging:
+            self._end_hover()
+
+    def _end_hover(self) -> None:
+        self.remove_class("-hover")  # type: ignore[attr-defined]
+        self.refresh()  # type: ignore[attr-defined]
+
+
+class TerminalResizeHandle(ResizeHover, Static):
     """Draggable Terminal header bar — drag vertically with mouse to resize Terminal."""
 
     def __init__(self, content: str, *, id: str | None = None, markup: bool = False) -> None:
@@ -146,6 +185,7 @@ class TerminalResizeHandle(Static):
             return
         app = self.app
         if isinstance(app, TermCodeApp):
+            self.add_class("-dragging")
             self._dragging = True
             self._start_y = event.screen_y
             self._start_height = app.terminal_height
@@ -157,15 +197,93 @@ class TerminalResizeHandle(Static):
             return
         app = self.app
         if isinstance(app, TermCodeApp):
-            delta = self._start_y - event.screen_y
-            app.set_terminal_height(self._start_height + delta)
+            wanted = self._start_height + (self._start_y - event.screen_y)
+            if wanted < COLLAPSE_TERMINAL_BELOW:
+                self._dragging = False
+                self.remove_class("-dragging")
+                self.release_mouse()
+                app.set_output_visible(False)
+            else:
+                app.set_terminal_height(wanted)
             event.stop()
 
     def on_mouse_up(self, event: events.MouseUp) -> None:
         if self._dragging:
             self._dragging = False
+            self.remove_class("-dragging")
             self.release_mouse()
+            if not self.is_mouse_over:
+                self._end_hover()
             event.stop()
+
+
+class OutputEdge(TerminalResizeHandle):
+    """The line along the top of the Output panel: the obvious thing to grab."""
+
+    def __init__(self, *, id: str | None = None) -> None:
+        super().__init__("", id=id)
+
+    def render(self) -> Text:
+        width = max(self.size.width, 1)
+        if self.has_class("-hover") or self.has_class("-dragging"):
+            # Thick line with a grip in the middle: reads as "drag me up/down".
+            grip = " ⇕ "
+            left = (width - len(grip)) // 2
+            return Text("━" * left + grip + "━" * (width - left - len(grip)))
+        return Text("─" * width)
+
+
+class SidebarResizeHandle(ResizeHover, Static):
+    """The sidebar's right edge: drag horizontally to resize, drag shut to hide."""
+
+    def __init__(self, *, id: str | None = None) -> None:
+        super().__init__("", id=id)
+        self._dragging = False
+        self._start_x = 0
+        self._start_width = DEFAULT_SIDEBAR_WIDTH
+
+    def render(self) -> Text:
+        height = max(self.size.height, 1)
+        if self.has_class("-hover") or self.has_class("-dragging"):
+            rows = ["┃"] * height
+            rows[height // 2] = "⇔"
+            return Text("\n".join(rows))
+        return Text("\n".join("│" for _ in range(height)))
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if event.button != 1 or not isinstance(app, TermCodeApp):
+            return
+        self._dragging = True
+        self._start_x = event.screen_x
+        self._start_width = app.sidebar_width
+        self.add_class("-dragging")
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        app = self.app
+        if not self._dragging or not isinstance(app, TermCodeApp):
+            return
+        wanted = self._start_width + (event.screen_x - self._start_x)
+        if wanted < COLLAPSE_SIDEBAR_BELOW:
+            self._stop()
+            app.set_sidebar_visible(False)
+        else:
+            app.set_sidebar_width(wanted)
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._dragging:
+            self._stop()
+            event.stop()
+
+    def _stop(self) -> None:
+        self._dragging = False
+        self.remove_class("-dragging")
+        self.release_mouse()
+        if not self.is_mouse_over:
+            self._end_hover()
 
 
 class CodeTextArea(TextArea):
@@ -178,6 +296,9 @@ class CodeTextArea(TextArea):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         register_extra_languages(self)
+        self.register_theme(theme.EDITOR_THEME)
+        self.register_theme(theme.OUTPUT_THEME)
+        self.theme = theme.OUTPUT_THEME_NAME if self.read_only else theme.EDITOR_THEME_NAME
 
     def action_copy(self) -> None:
         """Copy selected text, or the current line when nothing is selected (VS Code behavior)."""
@@ -219,6 +340,14 @@ class CodeTextArea(TextArea):
                 event.stop()
                 return
 
+        if event.key == "escape" and isinstance(app, TermCodeApp):
+            find_bar = app.query_one("#find-bar", FindBar)
+            if find_bar.is_open:
+                find_bar.action_close()
+                event.prevent_default()
+                event.stop()
+                return
+
         if event.key == "enter":
             row, col = self.cursor_location
             line_before = self.document.get_line(row)[:col]
@@ -242,11 +371,46 @@ class CodeTextArea(TextArea):
 
 
 class FilteredDirectoryTree(DirectoryTree):
-    """DirectoryTree that hides dotfiles and noisy build/cache folders by default."""
+    """DirectoryTree that hides dotfiles and noisy build/cache folders by default,
+    and draws the file that is open in the editor in the accent color."""
+
+    ICON_NODE = "▸ "
+    ICON_NODE_EXPANDED = "▾ "
+    ICON_FILE = "  "
+    # Class-level default: labels can render during __init__, before it's set.
+    active_path: Path | None = None
 
     def __init__(self, path: str | Path, *, show_hidden: bool = False, id: str | None = None) -> None:
         super().__init__(path, id=id)
         self.show_hidden = show_hidden
+        # The folder name already heads the sidebar; don't repeat it as a tree node.
+        self.show_root = False
+        self.active_path: Path | None = None
+
+    def render_label(self, node, base_style, style):  # type: ignore[no-untyped-def]
+        label = super().render_label(node, base_style, style)
+        path = getattr(node.data, "path", None)
+        if self.active_path is not None and path == self.active_path:
+            label.stylize(f"bold {theme.ACCENT}")
+        return label
+
+    def show_active(self, path: Path | None) -> None:
+        """Highlight path as the open file and, when it's visible, put the cursor on it."""
+        if path == self.active_path:
+            return
+        self.active_path = path
+        self._clear_line_cache()
+        self.refresh()
+        if path is None or self.has_focus:
+            return  # don't yank the cursor while the user is navigating the tree
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            if getattr(node.data, "path", None) == path:
+                self.move_cursor(node)
+                return
+            if node.is_expanded:
+                stack.extend(node.children)
 
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
         if self.show_hidden:
@@ -256,6 +420,46 @@ class FilteredDirectoryTree(DirectoryTree):
             for p in paths
             if not p.name.startswith(".") and p.name not in IGNORED_DIRS
         ]
+
+
+class TabItem(Horizontal):
+    """One editor tab: the file name plus a close button (× clean, ● unsaved)."""
+
+    def __init__(self, title: str, pane_id: str, tab_index: int, *, dirty: bool, active: bool) -> None:
+        super().__init__(classes="editor-tab")
+        self._title = title
+        self._dirty = dirty
+        self.pane_id = pane_id
+        self.tab_index = tab_index
+        self.set_class(active, "-active")
+        self.set_class(dirty, "-dirty")
+
+    def compose(self) -> ComposeResult:
+        yield TabButton(self._title, self.pane_id, self.tab_index, classes="editor-tab-btn")
+        close = TabCloseButton("●" if self._dirty else "×", self.pane_id, self.tab_index)
+        close.tooltip = "Close (Ctrl+W)"
+        yield close
+
+    def update_tab(self, title: str, pane_id: str, tab_index: int, *, dirty: bool, active: bool) -> None:
+        self.pane_id, self.tab_index = pane_id, tab_index
+        self.set_class(active, "-active")
+        self.set_class(dirty, "-dirty")
+        for child in self.children:
+            if isinstance(child, (TabButton, TabCloseButton)):
+                child.pane_id, child.tab_index = pane_id, tab_index
+            if isinstance(child, TabCloseButton):
+                child.label = "●" if dirty else "×"
+            elif isinstance(child, TabButton):
+                child.label = title
+
+
+class TabCloseButton(Button):
+    """The × on a tab."""
+
+    def __init__(self, label: str, pane_id: str, tab_index: int) -> None:
+        super().__init__(label, classes="editor-tab-close")
+        self.pane_id = pane_id
+        self.tab_index = tab_index
 
 
 class TabButton(Button):
@@ -304,6 +508,12 @@ class TermCodeApp(App[None]):
         Binding("ctrl+j", "toggle_terminal", "Terminal", priority=True),
         Binding("ctrl+l", "clear_output", "Clear", show=False, priority=True),
         Binding("ctrl+q", "request_quit", "Quit", priority=True),
+        Binding("ctrl+f", "find", "Find", show=False, priority=True),
+        Binding("ctrl+r", "replace", "Replace", show=False, priority=True),
+        Binding("ctrl+g", "goto_line", "GoTo", show=False, priority=True),
+        Binding("shift+f5", "run_in_terminal", "RunTerm", show=False, priority=True),
+        Binding("ctrl+t", "open_shell", "Shell", show=False, priority=True),
+        Binding("f6", "format_file", "Format", show=False, priority=True),
     ]
 
     def __init__(
@@ -323,14 +533,33 @@ class TermCodeApp(App[None]):
         self.is_split: bool = False
         self._suppress_dirty: bool = False
         self.runner: AsyncRunner = AsyncRunner()
-        self.output_history: str = ""
+        self._flushed_output: str = ""
+        self._pending_output: list[str] = []
+        self._flush_scheduled: bool = False
+        self._last_flush: float = 0.0
         self.terminal_height: int = DEFAULT_TERMINAL_HEIGHT
+        self.sidebar_width: int = DEFAULT_SIDEBAR_WIDTH
+        # What the user chose; the start page hides Output regardless.
+        self.output_visible: bool = True
+        self.format_on_save: bool = True
         self._recent_store: Path | None = recent_store
         self._recent_folders: list[Path] = []
         self._completion_editor: CodeTextArea | None = None
         self._completion_prefix: str = ""
         self._completion_items: list[str] = []
         self._just_accepted_completion: bool = False
+
+    @property
+    def output_history(self) -> str:
+        """Everything printed to the Output panel, including not-yet-rendered chunks."""
+        if self._pending_output:
+            return self._flushed_output + "".join(self._pending_output)
+        return self._flushed_output
+
+    @output_history.setter
+    def output_history(self, value: str) -> None:
+        self._pending_output.clear()
+        self._flushed_output = value
 
     @property
     def active_file(self) -> Path | None:
@@ -371,20 +600,29 @@ class TermCodeApp(App[None]):
         initial_tree_root = self.workspace_root or Path.home()
         with Horizontal(id="workspace-body"):
             with Vertical(id="sidebar"):
-                yield Static("EXPLORER", id="sidebar-title", markup=False)
-                with Horizontal(id="sidebar-folder-bar"):
+                with Vertical(id="sidebar-folder-bar"):
                     yield Static("", id="sidebar-folder", markup=False)
-                    yield Button("+F", id="sidebar-new-file-btn", classes="sidebar-tool-btn")
-                    yield Button("+D", id="sidebar-new-dir-btn", classes="sidebar-tool-btn")
+                    with Horizontal(id="sidebar-actions"):
+                        new_file_btn = Button("+ file", id="sidebar-new-file-btn", classes="sidebar-tool-btn")
+                        new_file_btn.tooltip = "New file (Ctrl+N)"
+                        yield new_file_btn
+                        new_dir_btn = Button("+ dir", id="sidebar-new-dir-btn", classes="sidebar-tool-btn")
+                        new_dir_btn.tooltip = "New folder (F3)"
+                        yield new_dir_btn
+                        yield Static("", classes="spacer")
+                        hide_side_btn = Button("«", id="sidebar-hide-btn", classes="sidebar-tool-btn")
+                        hide_side_btn.tooltip = "Hide sidebar (Ctrl+B)"
+                        yield hide_side_btn
                 with Vertical(id="no-folder-box"):
                     yield Static(
-                        "You have not yet opened a folder.",
+                        "No folder open.",
                         id="no-folder-text",
                         markup=False,
                     )
-                    yield Button("Open Folder", id="sidebar-open-folder-btn")
-                    yield Static("Press Ctrl+O anytime", id="no-folder-hint", markup=False)
+                    yield Button("Open folder", id="sidebar-open-folder-btn")
+                    yield Static("or press Ctrl+O", id="no-folder-hint", markup=False)
                 yield FilteredDirectoryTree(str(initial_tree_root), id="file-tree")
+            yield SidebarResizeHandle(id="sidebar-handle")
 
             with Vertical(id="main-pane"):
                 with Horizontal(id="editors-row"):
@@ -393,34 +631,42 @@ class TermCodeApp(App[None]):
                             with Horizontal(id="left-tabs"):
                                 yield Static("Home", id="active-tab", markup=False)
                             yield Static("", id="tab-meta", markup=False)
-                            yield Button("Split", id="split-toggle-btn", classes="term-tool-btn")
+                            split_btn = Button("Split", id="split-toggle-btn", classes="term-tool-btn")
+                            split_btn.tooltip = "Split editor (F12)"
+                            yield split_btn
 
                         with Vertical(id="welcome-view"):
                             with Vertical(id="welcome-card"):
-                                yield Static("TermCode", id="welcome-title", markup=False)
                                 yield Static(
-                                    "Select a folder to open your workspace",
+                                    Text.assemble(
+                                        ("termcode", f"bold {theme.TEXT}"),
+                                        (f"  {__version__}", theme.FAINT),
+                                    ),
+                                    id="welcome-title",
+                                )
+                                yield Static(
+                                    "Open a folder to start writing and running code.",
                                     id="welcome-subtitle",
                                     markup=False,
                                 )
                                 yield Button(
-                                    "Open Folder   (Ctrl+O)",
+                                    "Open folder   Ctrl+O",
                                     id="home-open-folder-btn",
                                 )
                                 with Vertical(id="home-recent-section"):
                                     yield Static(
-                                        "Recent Folders",
+                                        "Recent",
                                         classes="welcome-section-title",
                                         markup=False,
                                     )
                                     yield OptionList(id="recent-list")
                                     yield Static(
-                                        "No recent folders yet",
+                                        "Folders you open will show up here.",
                                         id="recent-empty",
                                         markup=False,
                                     )
                                 yield Static(
-                                    "Tip: run 'termcode' inside any project folder to open it directly.",
+                                    "Run termcode inside a project folder to skip this screen.",
                                     id="welcome-tip",
                                     markup=False,
                                 )
@@ -446,17 +692,23 @@ class TermCodeApp(App[None]):
                             id="editor-right",
                         )
 
+                yield FindBar(self._active_editor, id="find-bar")
+
                 with Vertical(id="output-pane"):
+                    edge = OutputEdge(id="output-edge")
+                    edge.tooltip = "Drag to resize"
+                    yield edge
                     with Horizontal(id="output-header-bar"):
-                        yield TerminalResizeHandle(
-                            "TERMINAL  ·  Idle  (drag to resize)",
-                            id="output-header",
-                            markup=False,
-                        )
-                        yield Button("▲", id="term-grow-btn", classes="term-tool-btn")
-                        yield Button("▼", id="term-shrink-btn", classes="term-tool-btn")
+                        handle = TerminalResizeHandle("", id="output-header")
+                        handle.tooltip = "Drag to resize (or Ctrl+Up / Ctrl+Down)"
+                        yield handle
+                        yield Button("▴", id="term-grow-btn", classes="term-tool-btn")
+                        yield Button("▾", id="term-shrink-btn", classes="term-tool-btn")
                         yield Button("Copy", id="term-copy-btn", classes="term-tool-btn")
                         yield Button("Clear", id="term-clear-btn", classes="term-tool-btn")
+                        hide_out_btn = Button("×", id="term-hide-btn", classes="term-tool-btn")
+                        hide_out_btn.tooltip = "Hide Output (Ctrl+J)"
+                        yield hide_out_btn
                     yield CodeTextArea(
                         "",
                         read_only=True,
@@ -466,13 +718,19 @@ class TermCodeApp(App[None]):
                         id="output-log",
                     )
                     yield Input(
-                        placeholder="> Type input and press Enter...",
+                        placeholder="Type input for the program, then Enter",
                         disabled=True,
                         id="stdin-input",
                     )
 
         yield OptionList(id="completion-popup")
         with Horizontal(id="status-bar"):
+            files_btn = Button("Files", id="status-files-btn", classes="status-toggle -on")
+            files_btn.tooltip = "Show or hide the sidebar (Ctrl+B)"
+            yield files_btn
+            out_btn = Button("Output", id="status-output-btn", classes="status-toggle -on")
+            out_btn.tooltip = "Show or hide Output (Ctrl+J)"
+            yield out_btn
             yield Static("", id="status-left", markup=False)
             yield Static("", id="status-right", markup=False)
 
@@ -480,6 +738,8 @@ class TermCodeApp(App[None]):
         self.query_one("#stdin-input", Input).display = False
         self.query_one("#right-editor-col").display = False
         self.query_one("#completion-popup").display = False
+        self.query_one("#find-bar").display = False
+        self._set_run_state("idle")
         self._refresh_recent_list()
 
         if self.workspace_root is not None:
@@ -511,11 +771,12 @@ class TermCodeApp(App[None]):
         folder_bar = self.query_one("#sidebar-folder-bar")
         folder_bar.display = has_folder
         if self.workspace_root is not None:
-            self.query_one("#sidebar-folder", Static).update(self.workspace_root.name.upper())
+            self.query_one("#sidebar-folder", Static).update(self.workspace_root.name)
 
         self.query_one("#welcome-view").display = show_welcome
         self.query_one("#editor").display = not show_welcome
-        self.query_one("#output-pane").display = not show_welcome
+        self.query_one("#output-pane").display = not show_welcome and self.output_visible
+        self._sync_layout_toggles()
         self.query_one("#split-toggle-btn").display = not show_welcome
         if show_welcome and self.is_split:
             self.is_split = False
@@ -538,7 +799,10 @@ class TermCodeApp(App[None]):
                 display_path = "~/" + folder.relative_to(home).as_posix()
             except ValueError:
                 display_path = str(folder)
-            recent_list.add_option(Option(f"{folder.name}  ({display_path})", id=str(idx)))
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append(folder.name, theme.TEXT)
+            row.append(f"   {display_path}", theme.FAINT)
+            recent_list.add_option(Option(row, id=str(idx)))
 
     def _apply_editor_language(self, editor: CodeTextArea, path: Path | None) -> None:
         wanted = editor_language_for_path(path)
@@ -587,37 +851,15 @@ class TermCodeApp(App[None]):
             except Exception:
                 pass
 
-        existing_buttons = [
-            c
-            for c in container.children
-            if isinstance(c, TabButton)
-        ]
-        num_tabs = len(pane.tabs)
-        num_existing = len(existing_buttons)
-
-        # Update matching buttons in place
-        for idx in range(min(num_tabs, num_existing)):
-            buf = pane.tabs[idx]
-            dot = " ●" if buf.is_dirty else ""
-            btn = existing_buttons[idx]
-            btn.label = f"{buf.title}{dot}"
-            btn.pane_id = pane_id
-            btn.tab_index = idx
-            btn.set_class(idx == pane.active_index, "-active")
-
-        # Mount extra buttons if more tabs than existing buttons
-        if num_tabs > num_existing:
-            for idx in range(num_existing, num_tabs):
-                buf = pane.tabs[idx]
-                dot = " ●" if buf.is_dirty else ""
-                classes = "editor-tab-btn -active" if idx == pane.active_index else "editor-tab-btn"
-                btn = TabButton(f"{buf.title}{dot}", pane_id, idx, classes=classes)
-                container.mount(btn)
-
-        # Remove extra buttons if fewer tabs than existing buttons
-        elif num_existing > num_tabs:
-            for idx in range(num_tabs, num_existing):
-                existing_buttons[idx].remove()
+        existing = [c for c in container.children if isinstance(c, TabItem)]
+        for idx, buf in enumerate(pane.tabs):
+            active = idx == pane.active_index
+            if idx < len(existing):
+                existing[idx].update_tab(buf.title, pane_id, idx, dirty=buf.is_dirty, active=active)
+            else:
+                container.mount(TabItem(buf.title, pane_id, idx, dirty=buf.is_dirty, active=active))
+        for extra in existing[len(pane.tabs):]:
+            extra.remove()
 
     def _render_pane(self, pane_id: str) -> None:
         pane = self._pane_for_id(pane_id)
@@ -654,31 +896,65 @@ class TermCodeApp(App[None]):
             self._rebuild_tab_strip("left")
             if self.is_split:
                 self._rebuild_tab_strip("right")
+            # Show the folder path only when the file lives below the root;
+            # otherwise it would just repeat the tab title.
             active_path = self.active_file
+            hint = ""
             if active_path is not None:
                 if self.workspace_root is not None:
                     try:
-                        rel = active_path.relative_to(self.workspace_root).as_posix()
+                        parent = active_path.parent.relative_to(self.workspace_root).as_posix()
+                        hint = "" if parent == "." else f"{parent}/"
                     except ValueError:
-                        rel = str(active_path)
+                        hint = str(active_path.parent)
                 else:
-                    rel = str(active_path)
-            else:
-                rel = str(self.workspace_root) if self.workspace_root else "Not saved"
-            meta.update(rel)
+                    hint = str(active_path.parent)
+            meta.update(hint)
+            tree = self.query_one("#file-tree", FilteredDirectoryTree)
+            tree.show_active(active_path.resolve() if active_path is not None else None)
 
-        folder_part = self.workspace_root.name if self.workspace_root else "No Folder"
-        status_left.update(
-            f"{folder_part}  ·  ^K Menu  ·  F5 Run  ·  ^S Save  ·  F12 Split  ·  ^J Terminal"
-        )
-
-        if on_welcome:
-            status_right.update("TermCode")
+        sep = "   "
+        left = Text(no_wrap=True, overflow="ellipsis")
+        if self.workspace_root is not None:
+            left.append(self.workspace_root.name, theme.TEXT)
+            branch = current_git_branch(self.workspace_root)
+            if branch:
+                left.append(f"{sep}⎇ {branch}", theme.MUTED)
         else:
+            left.append("No folder", theme.MUTED)
+        status_left.update(left)
+
+        right = Text(no_wrap=True)
+        if not on_welcome:
             editor = self._active_editor()
             row, col = editor.cursor_location
             lang_label = language_label_for_path(self.active_file)
-            status_right.update(f"Ln {row + 1}, Col {col + 1}  ·  UTF-8  ·  {lang_label}")
+            right.append(f"Ln {row + 1}, Col {col + 1}{sep}{lang_label}{sep}", theme.MUTED)
+        right.append("Ctrl+K", theme.TEXT)
+        right.append(" commands", theme.MUTED)
+        status_right.update(right)
+
+    def _set_run_state(self, state: str, detail: str = "") -> None:
+        """Paint the Output header and its left stripe for idle/running/ok/fail."""
+        glyphs = {
+            "idle": ("", theme.MUTED),
+            "running": ("● running", theme.BUSY),
+            "ok": ("✓", theme.OK),
+            "fail": ("✗", theme.FAIL),
+            "stopped": ("■ stopped", theme.MUTED),
+        }
+        label, color = glyphs.get(state, glyphs["idle"])
+        header = Text(no_wrap=True, overflow="ellipsis")
+        header.append("Output", f"bold {theme.TEXT}")
+        if label:
+            header.append("   ")
+            header.append(label, f"bold {color}")
+        if detail:
+            header.append(f"   {detail}", theme.MUTED)
+        self.query_one("#output-header", Static).update(header)
+        pane = self.query_one("#output-pane")
+        for s in glyphs:
+            pane.set_class(s == state, f"-{s}")
 
     def _refresh_tree(self) -> None:
         if self.workspace_root is None:
@@ -726,18 +1002,54 @@ class TermCodeApp(App[None]):
         self.query_one("#output-pane").styles.height = clamped
 
     def append_output(self, text: str) -> None:
-        """Append text chunk to the selectable Terminal output and bounded history."""
+        """Queue a chunk for the Output panel; chunks are flushed in batches.
+
+        Programs that print in a tight loop deliver thousands of tiny chunks.
+        Re-rendering the whole log per chunk is quadratic and froze the UI, so
+        chunks are buffered and appended at most ~30 times per second.
+        """
         if not text:
             return
         clean = Text.from_ansi(text).plain
         if not clean:
             return
-        self.output_history += clean
-        if len(self.output_history) > MAX_OUTPUT_HISTORY_CHARS:
-            self.output_history = self.output_history[-MAX_OUTPUT_HISTORY_CHARS:]
-        log = self.query_one("#output-log", CodeTextArea)
-        log.load_text(self.output_history)
-        log.scroll_end(animate=False)
+        self._pending_output.append(clean)
+        if self._flush_scheduled:
+            return
+        wait = self._last_flush + OUTPUT_FLUSH_INTERVAL - time.monotonic()
+        if wait <= 0:
+            self._flush_output()  # quiet stream: show it immediately
+        else:
+            self._flush_scheduled = True
+            self.set_timer(wait, self._scheduled_flush)
+
+    def _scheduled_flush(self) -> None:
+        self._flush_scheduled = False
+        self._flush_output()
+
+    def _flush_output(self) -> None:
+        if not self._pending_output:
+            return
+        self._last_flush = time.monotonic()
+        # Query the base screen so output keeps flowing while a modal is open.
+        try:
+            log = self.screen_stack[0].query_one("#output-log", CodeTextArea)
+        except (NoMatches, IndexError):  # app is shutting down
+            return
+        chunk = "".join(self._pending_output)
+        self._pending_output.clear()
+        follow = log.scroll_y >= log.max_scroll_y - 1
+        self._flushed_output += chunk
+        if len(self._flushed_output) > MAX_OUTPUT_HISTORY_CHARS:
+            # Trim well below the cap so the full reload happens rarely.
+            keep = int(MAX_OUTPUT_HISTORY_CHARS * 0.8)
+            self._flushed_output = self._flushed_output[-keep:]
+            log.load_text(self._flushed_output)
+        else:
+            log.insert(chunk, log.document.end, maintain_selection_offset=False)
+            log.history.clear()
+        if follow:
+            log.scroll_end(animate=False)
 
     # ---- Inline Autocomplete Popup ----
 
@@ -913,6 +1225,7 @@ class TermCodeApp(App[None]):
                 # Save all named dirty buffers; prompt if active buffer is untitled
                 for b in dirty_bufs:
                     if b.path is not None:
+                        self._format_before_save(b, b.path)
                         try:
                             write_text_file(b.path, b.content)
                             b.mark_saved()
@@ -921,7 +1234,7 @@ class TermCodeApp(App[None]):
                             return
                 remaining_untitled = [b for b in dirty_bufs if b.is_dirty]
                 if remaining_untitled:
-                    self._prompt_save_as(title="Save File", after_save=on_continue)
+                    self._prompt_save_as(title="Save file", after_save=on_continue)
                 else:
                     self._update_chrome()
                     on_continue()
@@ -933,9 +1246,10 @@ class TermCodeApp(App[None]):
         pane = self._active_pane()
         buf = pane.ensure_untitled()
         if buf.path is None:
-            self._prompt_save_as(title="Save File", after_save=after_save)
+            self._prompt_save_as(title="Save file", after_save=after_save)
             return
 
+        formatted = self._format_before_save(buf, buf.path)
         try:
             write_text_file(buf.path, buf.content)
         except WorkspaceError as exc:
@@ -944,14 +1258,88 @@ class TermCodeApp(App[None]):
 
         buf.mark_saved()
         self._update_chrome()
-        self.notify(f"Saved {buf.path.name}")
+        self.notify(f"Saved and formatted {buf.path.name}" if formatted else f"Saved {buf.path.name}")
         if after_save is not None:
             after_save()
+
+    # ---- Format on save ----
+
+    def _editor_showing(self, buf: OpenBuffer) -> CodeTextArea | None:
+        for pane_id in ("left", "right"):
+            if pane_id == "right" and not self.is_split:
+                continue
+            if self._pane_for_id(pane_id).active_buffer is buf:
+                return self._editor_for_pane(pane_id)
+        return None
+
+    def _replace_editor_text(self, editor: CodeTextArea, new_text: str) -> None:
+        """Swap in formatted text as one undoable edit, keeping the cursor on its code."""
+        row, col = editor.cursor_location
+        old_line = editor.document.get_line(row)
+        old_indent = len(old_line) - len(old_line.lstrip())
+        with editor.prevent(TextArea.Changed):
+            editor.replace(new_text, (0, 0), editor.document.end)
+        row = min(row, editor.document.line_count - 1)
+        new_line = editor.document.get_line(row)
+        new_indent = len(new_line) - len(new_line.lstrip())
+        col = max(0, min(col + new_indent - old_indent, len(new_line)))
+        editor.cursor_location = (row, col)
+
+    def _format_buffer(self, buf: OpenBuffer, path: Path) -> tuple[bool, str | None]:
+        """Format buf in place (and its editor). Returns (changed, error)."""
+        result = format_code(buf.content, editor_language_for_path(path), filename=path.name)
+        if result.error or not result.changed:
+            return False, result.error
+        editor = self._editor_showing(buf)
+        if editor is not None:
+            self._replace_editor_text(editor, result.text)
+            buf.content = editor.text
+            buf.cursor = editor.cursor_location
+        else:
+            buf.content = result.text
+        return True, None
+
+    def _format_before_save(self, buf: OpenBuffer, path: Path) -> bool:
+        """Run before every save (Ctrl+S, F5/Shift+F5, save-as, save-all). Never blocks saving."""
+        if not self.format_on_save:
+            return False
+        changed, error = self._format_buffer(buf, path)
+        if error:
+            self.notify(f"Saved without formatting. {error}", severity="warning", timeout=6)
+        return changed
+
+    def _format_clean_before_run(self) -> None:
+        """Run keys format even an already-saved file; a change makes it dirty, so it gets saved."""
+        buf = self._active_pane().active_buffer
+        if not self.format_on_save or buf is None or buf.path is None or buf.is_dirty:
+            return  # dirty or untitled files are formatted by the save that follows
+        _, error = self._format_buffer(buf, buf.path)
+        if error:
+            self.notify(f"Running without formatting. {error}", severity="warning", timeout=6)
+
+    def action_format_file(self) -> None:
+        if not self._editor_ready():
+            return
+        self._sync_buffer_from_editor(self.active_pane_id)
+        buf = self._active_pane().active_buffer
+        if buf is None:
+            return
+        path = buf.path or Path("untitled.txt")
+        changed, error = self._format_buffer(buf, path)
+        if error:
+            self.notify(f"Can't format: {error}", severity="warning", timeout=6)
+        else:
+            self.notify("Formatted" if changed else "Already tidy")
+        self._update_chrome()
+
+    def action_toggle_format_on_save(self) -> None:
+        self.format_on_save = not self.format_on_save
+        self.notify(f"Format on save is {'on' if self.format_on_save else 'off'}")
 
     def _prompt_save_as(
         self,
         *,
-        title: str = "Save As",
+        title: str = "Save as",
         after_save: Callable[[], None] | None = None,
     ) -> None:
         target_dir = self._target_dir_for_create()
@@ -974,6 +1362,7 @@ class TermCodeApp(App[None]):
 
             def _commit_save() -> None:
                 self._sync_buffer_from_editor(pane_id)
+                self._format_before_save(buf, dest)
                 try:
                     write_text_file(dest, buf.content)
                 except WorkspaceError as exc:
@@ -996,7 +1385,7 @@ class TermCodeApp(App[None]):
 
                 self.push_screen(
                     ConfirmModal(
-                        title="Overwrite Existing File?",
+                        title="Overwrite existing file?",
                         message=f"'{dest.name}' already exists. Overwrite it?",
                         confirm_label="Overwrite",
                     ),
@@ -1043,6 +1432,9 @@ class TermCodeApp(App[None]):
             self.action_open_palette()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if isinstance(event.button, TabCloseButton):
+            self._close_tab_at(event.button.pane_id, event.button.tab_index)
+            return
         if isinstance(event.button, TabButton):
             self._switch_to_tab(event.button.pane_id, event.button.tab_index)
             return
@@ -1062,6 +1454,10 @@ class TermCodeApp(App[None]):
             self.action_terminal_shrink()
         elif btn_id == "term-copy-btn":
             self.action_copy_output()
+        elif btn_id in ("sidebar-hide-btn", "status-files-btn"):
+            self.action_toggle_sidebar()
+        elif btn_id in ("term-hide-btn", "status-output-btn"):
+            self.action_toggle_terminal()
         elif btn_id == "term-clear-btn":
             self.action_clear_output()
         elif btn_id.startswith("tab-left-"):
@@ -1099,7 +1495,9 @@ class TermCodeApp(App[None]):
         buf.cursor = event.text_area.cursor_location
         self._update_chrome()
         if isinstance(event.text_area, CodeTextArea):
-            if self._just_accepted_completion:
+            if self.focused is not event.text_area:
+                self.hide_completions()
+            elif self._just_accepted_completion:
                 self._just_accepted_completion = False
             else:
                 self._update_completions(event.text_area)
@@ -1175,6 +1573,7 @@ class TermCodeApp(App[None]):
             self.notify("A program is already running. Press F7 (/stop) to stop it.", severity="warning")
             return
         self._sync_buffer_from_editor(self.active_pane_id)
+        self._format_clean_before_run()
         if self.active_file is None or self.is_dirty:
             self._save_current(after_save=self._start_run_worker)
         else:
@@ -1186,20 +1585,19 @@ class TermCodeApp(App[None]):
             return
         source = self.active_file
         ws_root = self.workspace_root or source.parent
-        out_pane = self.query_one("#output-pane")
-        out_pane.display = True
-        header = self.query_one("#output-header", Static)
+        self.set_output_visible(True)  # a run always brings Output back
         stdin_input = self.query_one("#stdin-input", Input)
 
         try:
             plan_preview = build_run_plan(source, ws_root, source.parent)
         except RunnerError as exc:
             self.append_output(f"[Error] {exc}\n")
+            self._set_run_state("fail", "could not start")
             self.notify(str(exc), severity="error")
             return
 
         self.append_output(f"$ {plan_preview.display_cmd}\n")
-        header.update(f"TERMINAL  ·  Running {source.name}  (F7 Stop)")
+        self._set_run_state("running", f"{source.name}   F7 to stop")
         stdin_input.disabled = False
         stdin_input.display = True
 
@@ -1207,25 +1605,169 @@ class TermCodeApp(App[None]):
             result = await self.runner.run(source, ws_root, self.append_output)
         except RunnerError as exc:
             self.append_output(f"[Error] {exc}\n")
+            self._set_run_state("fail", "could not start")
             self.notify(str(exc), severity="error")
         else:
+            secs = f"{result.duration_seconds:.2f}s"
             if result.cancelled:
-                self.append_output(f"[Stopped after {result.duration_seconds:.2f}s]\n")
+                self.append_output(f"[Stopped after {secs}]\n")
+                self._set_run_state("stopped", f"{source.name} after {secs}")
             elif result.compile_failed:
-                self.append_output(
-                    f"[Compile failed (exit {result.exit_code}) in {result.duration_seconds:.2f}s]\n"
-                )
+                self.append_output(f"[Compile failed (exit {result.exit_code}) in {secs}]\n")
+                self._set_run_state("fail", f"compile failed   {source.name}")
             else:
-                self.append_output(
-                    f"[Exited {result.exit_code} in {result.duration_seconds:.2f}s]\n"
-                )
+                self.append_output(f"[Exited {result.exit_code} in {secs}]\n")
+                state = "ok" if result.exit_code == 0 else "fail"
+                self._set_run_state(state, f"exit {result.exit_code}   {source.name} in {secs}")
         finally:
-            header.update("TERMINAL  ·  Idle  (drag to resize)")
             stdin_input.value = ""
             stdin_input.disabled = True
             stdin_input.display = False
             if self._on_main_screen() and self.query_one("#editor").display:
                 self._active_editor().focus()
+
+    # ---- Real terminal: hand the whole screen to a program or the shell ----
+
+    @staticmethod
+    def _tty_write(text: str) -> None:
+        """Write straight to the real terminal (Textual captures sys.stdout)."""
+        out = sys.__stdout__
+        if out is not None:
+            out.write(text)
+            out.flush()
+
+    @staticmethod
+    def _tty_wait_for_enter() -> None:
+        stdin = sys.__stdin__
+        if stdin is None:
+            return
+        try:
+            stdin.readline()
+        except (KeyboardInterrupt, EOFError, OSError):
+            pass
+
+    def _suspended(self, body: Callable[[], None]) -> bool:
+        """Run body with the real terminal; False if this terminal can't do that."""
+        try:
+            with self.suspend():
+                body()
+        except SuspendNotSupported:
+            self.notify("This terminal can't hand over the screen.", severity="warning")
+            return False
+        return True
+
+    def action_open_shell(self) -> None:
+        """Ctrl+T: open the user's own shell; `exit` comes back to TermCode."""
+        if not self._on_main_screen():
+            return
+        if self.runner.is_running:
+            self.notify("Stop the running program first (F7).", severity="warning")
+            return
+        self.hide_completions()
+        cwd = self.workspace_root or Path.home()
+        cmd = user_shell_command()
+
+        def _shell() -> None:
+            self._tty_write(
+                f"\x1b[2J\x1b[H\x1b[2mTermCode is paused. You're in {cwd}. "
+                "Type exit to come back.\x1b[0m\n"
+            )
+            try:
+                wait_ignoring_ctrl_c(subprocess.Popen(cmd, cwd=cwd))
+            except OSError as exc:
+                self._tty_write(f"Could not start {cmd[0]}: {exc}\nPress Enter to return. ")
+                self._tty_wait_for_enter()
+
+        if self._suspended(_shell):
+            self._refresh_tree()  # the shell may have created or deleted files
+            self._reload_clean_buffers()
+
+    def action_run_in_terminal(self) -> None:
+        """Shift+F5: save, then run the file with the full terminal (Code::Blocks style)."""
+        if not self._editor_ready():
+            return
+        if self.runner.is_running:
+            self.notify("A program is already running. Press F7 to stop it.", severity="warning")
+            return
+        self._sync_buffer_from_editor(self.active_pane_id)
+        self._format_clean_before_run()
+        if self.active_file is None or self.is_dirty:
+            self._save_current(after_save=self._run_in_terminal_now)
+        else:
+            self._run_in_terminal_now()
+
+    def _run_in_terminal_now(self) -> None:
+        source = self.active_file
+        if source is None:
+            return
+        ws_root = self.workspace_root or source.parent
+        outcome: dict[str, object] = {}
+
+        def _run() -> None:
+            self._tty_write(f"\x1b[2J\x1b[H\x1b[2m$ running {source.name}\x1b[0m\n\n")
+            try:
+                outcome["result"] = run_in_foreground(source, ws_root)
+            except RunnerError as exc:
+                outcome["error"] = str(exc)
+                self._tty_write(f"\x1b[31m{exc}\x1b[0m\n")
+            result = outcome.get("result")
+            if isinstance(result, RunResult):
+                color = "32" if result.exit_code == 0 and not result.cancelled else "31"
+                status = (
+                    "stopped" if result.cancelled
+                    else "failed to compile" if result.compile_failed
+                    else f"exited {result.exit_code}"
+                )
+                summary = f"{source.name} {status} in {result.duration_seconds:.2f}s"
+            else:
+                color, summary = "31", f"{source.name} could not start"
+            self._tty_write(
+                f"\n\x1b[{color}m── {summary} ──\x1b[0m\x1b[2m press Enter to return \x1b[0m"
+            )
+            self._tty_wait_for_enter()
+
+        if not self._suspended(_run):
+            return
+        result = outcome.get("result")
+        if isinstance(result, RunResult):
+            secs = f"{result.duration_seconds:.2f}s"
+            if result.cancelled:
+                self._set_run_state("stopped", f"{source.name} after {secs}   ran in terminal")
+            elif result.compile_failed:
+                self._set_run_state("fail", f"compile failed   {source.name}   ran in terminal")
+            else:
+                state = "ok" if result.exit_code == 0 else "fail"
+                self._set_run_state(
+                    state, f"exit {result.exit_code}   {source.name} in {secs}   ran in terminal"
+                )
+            self.append_output(f"[Ran {source.name} in terminal: exit {result.exit_code} in {secs}]\n")
+        elif "error" in outcome:
+            self._set_run_state("fail", "could not start")
+            self.notify(str(outcome["error"]), severity="error")
+        self._active_editor().focus()
+
+    def _reload_clean_buffers(self) -> None:
+        """After the shell, pick up on-disk edits to files that have no unsaved changes."""
+        for pane_id in ("left", "right"):
+            if pane_id == "right" and not self.is_split:
+                continue
+            pane = self._pane_for_id(pane_id)
+            self._sync_buffer_from_editor(pane_id)
+            changed = False
+            for buf in pane.tabs:
+                if buf.path is None or buf.is_dirty or not buf.path.is_file():
+                    continue
+                try:
+                    disk = read_text_file(buf.path)
+                except WorkspaceError:
+                    continue
+                if disk != buf.content:
+                    buf.content = disk
+                    buf.saved_content = disk
+                    changed = True
+            if changed:
+                self._render_pane(pane_id)
+        self._update_chrome()
 
     def action_stop_run(self) -> None:
         if not self._on_main_screen():
@@ -1427,7 +1969,7 @@ class TermCodeApp(App[None]):
 
         self.push_screen(
             ConfirmModal(
-                title="Confirm Delete",
+                title="Delete permanently?",
                 message=f"Permanently delete {kind} '{target.name}'?",
                 confirm_label="Delete",
             ),
@@ -1447,6 +1989,25 @@ class TermCodeApp(App[None]):
         self._render_pane(pane_id)
         self._update_chrome()
         self._editor_for_pane(pane_id).focus()
+
+    def _close_tab_at(self, pane_id: str, index: int) -> None:
+        """Close any tab from its ×; unsaved tabs are shown first, then asked about."""
+        if not self._on_main_screen():
+            return
+        self.hide_completions()
+        pane = self._pane_for_id(pane_id)
+        self._sync_buffer_from_editor(pane_id)
+        if not (0 <= index < len(pane.tabs)):
+            return
+        if index != pane.active_index and not pane.tabs[index].is_dirty:
+            pane.close_tab(index)  # background tab, nothing to lose
+            self._rebuild_tab_strip(pane_id)
+            self._update_chrome()
+            return
+        if index != pane.active_index:
+            self._switch_to_tab(pane_id, index)
+        self.active_pane_id = pane_id
+        self.action_close_tab()
 
     def action_close_tab(self) -> None:
         if not self._on_main_screen() or self.query_one("#welcome-view").display:
@@ -1510,17 +2071,108 @@ class TermCodeApp(App[None]):
             self._update_chrome()
             self._editor_for_pane("left").focus()
 
+    def _editor_ready(self) -> bool:
+        return self._on_main_screen() and not self.query_one("#welcome-view").display
+
+    def action_find(self) -> None:
+        if not self._editor_ready():
+            return
+        self.hide_completions()
+        self.query_one("#find-bar", FindBar).open(replace=False)
+
+    def action_replace(self) -> None:
+        if not self._editor_ready():
+            return
+        self.hide_completions()
+        self.query_one("#find-bar", FindBar).open(replace=True)
+
+    def action_goto_line(self) -> None:
+        if not self._editor_ready():
+            return
+        self.hide_completions()
+        editor = self._active_editor()
+        line_count = editor.document.line_count
+
+        def _go(raw: str | None) -> None:
+            if raw is None:
+                return
+            target = parse_goto(raw)
+            if target is None:
+                self.notify("Type a line number, like 42 or 42:7.", severity="warning")
+                return
+            row = min(target[0], line_count - 1)
+            col = min(target[1], len(editor.document.get_line(row)))
+            editor.cursor_location = (row, col)
+            editor.scroll_cursor_visible(center=True)
+            editor.focus()
+
+        row = editor.cursor_location[0] + 1
+        self.push_screen(
+            TextInputModal(
+                title="Go to line",
+                prompt=f"Line 1–{line_count}, optionally with a column (42:7). You're on line {row}.",
+                placeholder="42",
+                confirm_label="Go",
+            ),
+            _go,
+        )
+
     def action_toggle_sidebar(self) -> None:
         if not self._on_main_screen():
             return
-        sidebar = self.query_one("#sidebar")
-        sidebar.display = not sidebar.display
+        self.set_sidebar_visible(not self.query_one("#sidebar").display)
 
     def action_toggle_terminal(self) -> None:
         if not self._on_main_screen():
             return
+        if self.query_one("#welcome-view").display:
+            self.notify("Open a folder or file to use Output.")
+            return
+        self.set_output_visible(not self.query_one("#output-pane").display)
+
+    # ---- Layout ----
+
+    def set_sidebar_visible(self, visible: bool) -> None:
+        self.query_one("#sidebar").display = visible
+        self.query_one("#sidebar-handle").display = visible
+        if visible:
+            self.set_sidebar_width(max(self.sidebar_width, MIN_SIDEBAR_WIDTH))
+        elif self.focused is not None and self.query_one("#sidebar") in self.focused.ancestors:
+            self._focus_main()
+        self._sync_layout_toggles()
+
+    def set_sidebar_width(self, width: int) -> None:
+        max_w = MAX_SIDEBAR_WIDTH
+        if self.size.width:
+            max_w = max(MIN_SIDEBAR_WIDTH, min(MAX_SIDEBAR_WIDTH, self.size.width - 30))
+        self.sidebar_width = max(MIN_SIDEBAR_WIDTH, min(width, max_w))
+        sidebar = self.query_one("#sidebar")
+        sidebar.styles.width = self.sidebar_width
+        sidebar.styles.min_width = None
+        sidebar.styles.max_width = None
+
+    def set_output_visible(self, visible: bool) -> None:
+        self.output_visible = visible
+        on_welcome = self.query_one("#welcome-view").display
         out_pane = self.query_one("#output-pane")
-        out_pane.display = not out_pane.display
+        out_pane.display = visible and not on_welcome
+        if visible and self.terminal_height < MIN_TERMINAL_HEIGHT + 2:
+            self.set_terminal_height(DEFAULT_TERMINAL_HEIGHT)
+        if not visible and self.focused is not None and out_pane in self.focused.ancestors:
+            self._focus_main()
+        self._sync_layout_toggles()
+
+    def _focus_main(self) -> None:
+        if self.query_one("#editor").display:
+            self._active_editor().focus()
+        else:
+            self.query_one("#home-open-folder-btn").focus()
+
+    def _sync_layout_toggles(self) -> None:
+        self.query_one("#status-files-btn").set_class(self.query_one("#sidebar").display, "-on")
+        self.query_one("#status-output-btn").set_class(
+            bool(self.query_one("#output-pane").display), "-on"
+        )
 
     def action_toggle_hidden(self) -> None:
         if not self._on_main_screen():
@@ -1535,8 +2187,8 @@ class TermCodeApp(App[None]):
     def action_terminal_grow(self) -> None:
         if not self._on_main_screen():
             return
-        out_pane = self.query_one("#output-pane")
-        out_pane.display = True
+        if not self.query_one("#output-pane").display:
+            self.set_output_visible(True)
         self.set_terminal_height(self.terminal_height + 3)
 
     def action_terminal_shrink(self) -> None:
@@ -1550,6 +2202,7 @@ class TermCodeApp(App[None]):
     def action_copy_output(self) -> None:
         if not self._on_main_screen():
             return
+        self._flush_output()
         log = self.query_one("#output-log", CodeTextArea)
         if log.selected_text:
             self.copy_to_clipboard(log.selected_text)

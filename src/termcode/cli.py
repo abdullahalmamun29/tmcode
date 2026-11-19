@@ -10,21 +10,24 @@ from termcode import __version__
 from termcode.app import TermCodeApp
 
 
+def _is_home(path: Path) -> bool:
+    try:
+        return path == Path.home().resolve()
+    except RuntimeError:  # no resolvable home directory
+        return False
+
+
 def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path | None, Path | None]:
     """Resolve optional CLI path into (workspace_root, initial_file).
 
-    When invoked with no path (`termcode`) from the user's home directory,
-    returns (None, None) so TermCode opens on the Home tab asking to select a
-    folder. From any other directory, opens that directory directly.
+    The home directory is never opened as a workspace: nobody keeps a project
+    directly in ~, and scanning all of it would be slow. Whether you run
+    `termcode`, `termcode .` or `termcode ~` there, you get the start page
+    asking which folder to open. Any other directory opens directly.
     """
     base = (cwd or Path.cwd()).resolve()
     if arg is None:
-        try:
-            if base == Path.home().resolve():
-                return None, None
-        except RuntimeError:
-            pass
-        return base, None
+        return (None, None) if _is_home(base) else (base, None)
 
     target = Path(arg).expanduser()
     if not target.is_absolute():
@@ -35,7 +38,7 @@ def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path | N
 
     resolved = target.resolve()
     if resolved.is_dir():
-        return resolved, None
+        return (None, None) if _is_home(resolved) else (resolved, None)
     return resolved.parent, resolved
 
 

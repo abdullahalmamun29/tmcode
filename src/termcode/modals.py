@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,7 +13,20 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, OptionList
 from textual.widgets.option_list import Option
 
+from termcode import theme
 from termcode.commands import CommandSpec, filter_commands
+
+
+def command_label(spec: CommandSpec, desc_width: int = 33) -> Text:
+    """One-line palette row: command, muted description, shortcut at the end."""
+    desc = spec.description
+    if len(desc) > desc_width:
+        desc = desc[: desc_width - 1] + "…"
+    row = Text(no_wrap=True, overflow="ellipsis")
+    row.append(f"{spec.command:<18}", theme.TEXT)
+    row.append(f"{desc:<{desc_width}}", theme.MUTED)
+    row.append(f" {spec.shortcut:>8}", theme.FAINT)
+    return row
 
 
 class CommandPaletteModal(ModalScreen[str | None]):
@@ -29,7 +43,7 @@ class CommandPaletteModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="palette-dialog", classes="modal-box"):
-            yield Label("Command Menu  (type to filter, Enter to run, Esc to close)", classes="modal-title")
+            yield Label("Commands", classes="modal-title")
             yield Input(
                 value=self._initial_query,
                 placeholder="/run, /save, /new-file...",
@@ -48,8 +62,7 @@ class CommandPaletteModal(ModalScreen[str | None]):
         option_list = self.query_one("#palette-list", OptionList)
         option_list.clear_options()
         for spec in self._filtered:
-            label = f"{spec.command:<17} [{spec.shortcut:<6}]  {spec.description}"
-            option_list.add_option(Option(label, id=spec.action))
+            option_list.add_option(Option(command_label(spec), id=spec.action))
         if self._filtered:
             option_list.highlighted = 0
 
@@ -154,8 +167,8 @@ class FilePickerModal(ModalScreen[Path | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-dialog", classes="modal-box"):
-            yield Label(f"Open File in {self._root.name}/", classes="modal-title")
-            yield Input(placeholder="Type part of a filename or path...", id="picker-input")
+            yield Label(f"Open a file in {self._root.name}", classes="modal-title")
+            yield Input(placeholder="Type part of a file name or path", id="picker-input")
             yield OptionList(id="picker-list")
 
     def on_mount(self) -> None:
@@ -266,7 +279,7 @@ class UnsavedChangesModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="unsaved-dialog", classes="modal-box"):
-            yield Label("Unsaved Changes", classes="modal-title")
+            yield Label("Unsaved changes", classes="modal-title")
             yield Label(
                 f"Save changes to '{self._filename}' before continuing?",
                 classes="modal-subtitle",
@@ -314,19 +327,19 @@ class FolderPickerModal(ModalScreen[Path | None]):
         self._quick_map: dict[str, Path] = {btn_id: p for btn_id, _, p in quick_places}
 
         with Vertical(id="folder-dialog", classes="modal-box"):
-            yield Label("Open Folder", classes="modal-title", markup=False)
+            yield Label("Open folder", classes="modal-title", markup=False)
             yield Input(
                 value=str(self._current),
-                placeholder="Type a path or select a folder below...",
+                placeholder="Type a path, or pick a folder below",
                 id="folder-path-input",
             )
             with Horizontal(classes="quick-bar"):
-                yield Button(".. Up", id="quick-up", classes="quick-btn")
+                yield Button("↑ Up", id="quick-up", classes="quick-btn")
                 for btn_id, label, _ in quick_places:
                     yield Button(label, id=btn_id, classes="quick-btn")
             yield OptionList(id="folder-list")
             with Horizontal(classes="modal-buttons"):
-                yield Button("Open This Folder", variant="primary", id="open-folder-btn")
+                yield Button("Open this folder", variant="primary", id="open-folder-btn")
                 yield Button("Cancel", id="cancel-btn")
 
     def on_mount(self) -> None:
@@ -344,7 +357,7 @@ class FolderPickerModal(ModalScreen[Path | None]):
 
         if self._current.parent != self._current:
             self._entries.append(self._current.parent)
-            option_list.add_option(Option("..   (Parent Folder)", id="0"))
+            option_list.add_option(Option(Text("↑ ..  parent folder", style=theme.MUTED), id="0"))
 
         try:
             subdirs = sorted(

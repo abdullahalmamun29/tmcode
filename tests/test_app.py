@@ -35,14 +35,13 @@ def test_parse_cli_target(tmp_path: Path) -> None:
     home = Path.home().resolve()
     root_home, initial_home = parse_cli_target(None, cwd=home)
     assert root_home is None and initial_home is None
+    # `termcode .` and `termcode ~` from home also show the start page
+    assert parse_cli_target(".", cwd=home) == (None, None)
+    assert parse_cli_target(str(home), cwd=tmp_path) == (None, None)
 
     # Plain `termcode` from any non-home folder opens that folder directly
     root, initial = parse_cli_target(None, cwd=tmp_path)
     assert root == tmp_path.resolve() and initial is None
-
-    # Explicit `termcode .` opens current directory even from home
-    root_dot, initial_dot = parse_cli_target(".", cwd=home)
-    assert root_dot == home and initial_dot is None
 
     root2, initial2 = parse_cli_target(str(tmp_path))
     assert root2 == tmp_path.resolve() and initial2 is None
@@ -620,3 +619,217 @@ async def test_sidebar_buttons_multi_tab_and_split_editor(tmp_path: Path) -> Non
         await pilot.pause()
         assert len(app.left_pane.tabs) == 1
         assert app.active_file == f1.resolve()
+
+
+@pytest.mark.asyncio
+async def test_find_replace_and_goto_line(tmp_path: Path) -> None:
+    src = tmp_path / "f.py"
+    src.write_text("total = 1\nTotal = 2\nx = total + 3\n", encoding="utf-8")
+    app = TermCodeApp(tmp_path, src, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        editor = app.query_one("#editor", TextArea)
+        bar = app.query_one("#find-bar")
+        editor.cursor_location = (0, 0)
+
+        # Ctrl+F opens the bar; typing selects the first match (case-insensitive).
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        assert bar.display and app.focused.id == "find-input"
+        for ch in "total":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert editor.selected_text == "total"
+        assert editor.selection.start == (0, 0)
+
+        # Enter / Down go forward, Up goes back, and it wraps.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert editor.selection.start == (1, 0)
+        await pilot.press("down")
+        await pilot.pause()
+        assert editor.selection.start == (2, 4)
+        await pilot.press("down")
+        await pilot.pause()
+        assert editor.selection.start == (0, 0)
+        await pilot.press("up")
+        await pilot.pause()
+        assert editor.selection.start == (2, 4)
+
+        # Match-case toggle narrows results.
+        await pilot.click("#find-case")
+        await pilot.pause()
+        assert "of 2" in str(app.query_one("#find-count").render())
+
+        # Esc closes and returns focus to the editor.
+        app.query_one("#find-input").focus()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not bar.display and app.focused is editor
+
+        # Ctrl+R: replace one, then replace all (case-sensitive still on).
+        editor.cursor_location = (0, 0)
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        app.query_one("#replace-input").value = "sum"
+        app.query_one("#replace-input").focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert editor.text.startswith("sum = 1\n")
+        await pilot.click("#replace-all")
+        await pilot.pause()
+        assert editor.text == "sum = 1\nTotal = 2\nx = sum + 3\n"
+
+        # Ctrl+Z undoes replace-all in one step.
+        editor.focus()
+        await pilot.press("ctrl+z")
+        await pilot.pause()
+        assert editor.text == "sum = 1\nTotal = 2\nx = total + 3\n"
+
+        # Ctrl+G jumps to line:column, clamped to the document.
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        app.screen.query_one("#modal-input").value = "3:5"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert editor.cursor_location == (2, 4)
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        app.screen.query_one("#modal-input").value = "999"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert editor.cursor_location[0] == editor.document.line_count - 1
+
+
+@pytest.mark.asyncio
+async def test_shell_and_run_in_terminal_degrade_without_suspend(tmp_path: Path) -> None:
+    # The headless test driver can't suspend, so both actions must warn, not crash.
+    src = tmp_path / "f.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+    app = TermCodeApp(tmp_path, src, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        await pilot.press("shift+f5")
+        await pilot.pause()
+        messages = [n.message for n in app._notifications]
+        assert sum("can't hand over" in m for m in messages) == 2
+        assert app.query_one("#editor").display
+
+
+@pytest.mark.asyncio
+async def test_format_on_save_and_before_run(tmp_path: Path) -> None:
+    src = tmp_path / "messy.py"
+    src.write_text("def f():\n  return 1\n", encoding="utf-8")
+    app = TermCodeApp(tmp_path, src, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        editor = app.query_one("#editor", TextArea)
+
+        # Ctrl+S formats, then saves; one Ctrl+Z undoes the formatting.
+        editor.cursor_location = (1, 2)
+        editor.insert("x = 2\n  ")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert src.read_text(encoding="utf-8") == "def f():\n    x = 2\n    return 1\n"
+        assert editor.text == "def f():\n    x = 2\n    return 1\n"
+        assert editor.cursor_location[0] == 2
+
+        # A saved-but-messy file (edited outside) is formatted, saved, then run on F5.
+        src.write_text("def f():\n  return 1\nprint(f())\n", encoding="utf-8")
+        app.left_pane.clear()
+        app.load_file(src)
+        await pilot.pause()
+        await pilot.press("f5")
+        await _wait_until(lambda: "Exited 0" in app.output_history and not app.runner.is_running)
+        assert src.read_text(encoding="utf-8") == "def f():\n    return 1\nprint(f())\n"
+        assert "1\n" in app.output_history
+
+        # Syntax errors: saved as typed, with a warning, never blocked.
+        editor.load_text("def f(:\n  pass\n")
+        app.left_pane.active_buffer.content = editor.text
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert src.read_text(encoding="utf-8") == "def f(:\n  pass\n"
+        assert any("without formatting" in n.message for n in app._notifications)
+
+        # The toggle turns it off.
+        app.action_toggle_format_on_save()
+        editor.load_text("if True:\n  x = 1\n")
+        app.left_pane.active_buffer.content = editor.text
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert src.read_text(encoding="utf-8") == "if True:\n  x = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_panels_resize_hide_and_tab_close(tmp_path: Path) -> None:
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    c = tmp_path / "c.py"
+    for f in (a, b, c):
+        f.write_text("x = 1\n", encoding="utf-8")
+    app = TermCodeApp(tmp_path, a, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        sidebar = app.query_one("#sidebar")
+        out_pane = app.query_one("#output-pane")
+
+        # Drag the sidebar edge right by 10 columns.
+        # (Screen coordinates throughout: the handle moves while you drag it.)
+        start_w = sidebar.size.width
+        hx = app.query_one("#sidebar-handle").region.x
+        await pilot.mouse_down("#sidebar-handle")
+        await pilot.hover(None, offset=(hx + 10, 5))
+        await pilot.mouse_up(None, offset=(hx + 10, 5))
+        await pilot.pause()
+        assert sidebar.size.width == start_w + 10
+
+        # Dragging it nearly shut collapses it; the status bar brings it back.
+        await pilot.mouse_down("#sidebar-handle")
+        await pilot.hover(None, offset=(3, 5))
+        await pilot.pause()
+        assert not sidebar.display
+        assert not app.query_one("#status-files-btn").has_class("-on")
+        await pilot.click("#status-files-btn")
+        await pilot.pause()
+        assert sidebar.display and app.query_one("#status-files-btn").has_class("-on")
+
+        # Output: × hides it, and opening another file must NOT bring it back.
+        await pilot.click("#term-hide-btn")
+        await pilot.pause()
+        assert not out_pane.display
+        app.load_file(b)
+        await pilot.pause()
+        assert not out_pane.display
+        await pilot.click("#status-output-btn")
+        await pilot.pause()
+        assert out_pane.display
+
+        # Tabs: the open file is highlighted in the tree; × closes a background tab.
+        app.load_file(c)
+        await pilot.pause()
+        tree = app.query_one("#file-tree")
+        assert tree.active_path == c.resolve()
+        assert [t.title for t in app.left_pane.tabs] == ["a.py", "b.py", "c.py"]
+        closes = list(app.query(".editor-tab-close"))
+        await pilot.click(closes[0])  # close a.py while c.py stays active
+        await pilot.pause()
+        assert [t.title for t in app.left_pane.tabs] == ["b.py", "c.py"]
+        assert app.active_file == c.resolve()
+        active_tabs = [t for t in app.query(".editor-tab") if t.has_class("-active")]
+        assert len(active_tabs) == 1
+
+        # A dirty tab shows ● and asks before closing.
+        editor = app.query_one("#editor", TextArea)
+        editor.insert("y = 2\n")
+        await pilot.pause()
+        assert str(list(app.query(".editor-tab-close"))[-1].label) == "●"
+        await pilot.click(list(app.query(".editor-tab-close"))[-1])
+        await pilot.pause()
+        assert isinstance(app.screen, UnsavedChangesModal)
+        await pilot.click("#discard-btn")
+        await pilot.pause()
+        assert [t.title for t in app.left_pane.tabs] == ["b.py"]

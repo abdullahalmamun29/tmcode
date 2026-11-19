@@ -7,6 +7,8 @@ def test_all_spec_commands_present_with_unique_shortcuts() -> None:
     names = {c.command for c in COMMANDS}
     assert names == {
         "/run",
+        "/run-in-terminal",
+        "/shell",
         "/stop",
         "/save",
         "/save-as",
@@ -26,6 +28,11 @@ def test_all_spec_commands_present_with_unique_shortcuts() -> None:
         "/next-tab",
         "/close-tab",
         "/split-editor",
+        "/find",
+        "/replace",
+        "/goto-line",
+        "/format-file",
+        "/format-on-save",
         "/quit",
     }
 

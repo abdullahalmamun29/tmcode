@@ -14,28 +14,50 @@ Lightweight, cross-platform VS Code-style terminal code editor and runner for **
 
 ## Installation
 
+TmCode needs **Python 3.10+**. The easiest way is [pipx](https://pipx.pypa.io), which installs it in its own isolated environment and puts the `tmcode` command on your PATH.
+
 ### Linux / macOS
 ```bash
-cd /home/jobayer/Documents/termcode
-python3 -m venv .venv
-.venv/bin/pip install -e .
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/.venv/bin/termcode" ~/.local/bin/termcode
+python3 -m pip install --user pipx    # or: sudo apt install pipx / brew install pipx
+python3 -m pipx ensurepath            # then open a new terminal
+pipx install tmcode
 ```
 
 ### Windows (PowerShell)
 ```powershell
-python -m venv .venv
-.venv\Scripts\pip install -e .
-.venv\Scripts\termcode.exe .
+py -m pip install --user pipx
+py -m pipx ensurepath                 # then open a new terminal
+pipx install tmcode
 ```
-*(Or install globally with `pipx install .` on Linux, macOS, or Windows.)*
+
+Then run `tmcode` (the old `termcode` command works too).
+
+**Update:** `pipx upgrade tmcode` · **Uninstall:** `pipx uninstall tmcode`
+
+Install the latest code straight from GitHub instead of PyPI:
+```bash
+pipx install git+https://github.com/abdullahalmamun29/tmcode.git
+```
+
+### Optional extras
+- To **run** code you need the language itself installed: `python3`, `gcc`/`g++` for C/C++, `node`, `go`, `rustc`, `java`, etc.
+- **Format on save** works out of the box with a built-in re-indenter. If `ruff`/`black`, `clang-format`, `prettier`, `gofmt` or `rustfmt` are installed, TmCode uses them automatically.
+- The resize pointer (↔ ↕ on panel edges) shows in kitty, WezTerm, Ghostty, foot and xterm; other terminals show the highlighted grip instead.
+
+### From source (for development)
+```bash
+git clone https://github.com/abdullahalmamun29/tmcode.git
+cd tmcode
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest
+```
 
 ## Usage
 
 ```bash
 termcode                  # From ~ opens the Home tab (folder selector & recent folders); from any project folder opens it directly
-termcode .                # Open current directory directly
+termcode .                # Open current directory directly (from ~ this still shows the start page)
 termcode path/to/project  # Open a specific folder
 termcode path/to/main.py  # Open a specific file and its folder
 ```
@@ -73,3 +95,7 @@ Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the f
 ```bash
 .venv/bin/pytest -v
 ```
+
+## License
+
+MIT © 2026 Abdullah Al Mamun. See [LICENSE](LICENSE).

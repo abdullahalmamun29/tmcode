@@ -222,3 +222,50 @@ def record_recent_folder(
         )
     except OSError:
         pass
+
+
+_BRANCH_CACHE: dict[Path, tuple[float, str | None]] = {}
+
+
+def _find_git_head(root: Path) -> Path | None:
+    for folder in (root, *root.parents):
+        dot_git = folder / ".git"
+        if dot_git.is_dir():
+            return dot_git / "HEAD"
+        if dot_git.is_file():  # worktree or submodule: "gitdir: <path>"
+            try:
+                text = dot_git.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            if text.startswith("gitdir:"):
+                gitdir = Path(text.removeprefix("gitdir:").strip())
+                if not gitdir.is_absolute():
+                    gitdir = folder / gitdir
+                return gitdir / "HEAD"
+            return None
+    return None
+
+
+def current_git_branch(root: Path) -> str | None:
+    """Return the checked-out branch (or short SHA) for root, without running git.
+
+    Called on every keystroke via the status bar, so it only re-reads HEAD
+    when the file's mtime changes.
+    """
+    head = _find_git_head(root)
+    if head is None:
+        return None
+    try:
+        mtime = head.stat().st_mtime
+    except OSError:
+        return None
+    cached = _BRANCH_CACHE.get(head)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        ref = head.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    branch = ref.removeprefix("ref: refs/heads/") if ref.startswith("ref:") else ref[:7]
+    _BRANCH_CACHE[head] = (mtime, branch)
+    return branch

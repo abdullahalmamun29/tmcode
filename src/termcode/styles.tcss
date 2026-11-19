@@ -1,229 +1,382 @@
-/* VS Code Dark Modern inspired styling for TermCode */
+/* TermCode — slate theme.
+ * Palette tokens mirror src/termcode/theme.py; keep both in sync.
+ * Rule of thumb: chrome is $bg, the place you type is $surface, and the only
+ * saturated color on screen is either $accent (focus) or a run state. */
+
+$bg: #14171c;
+$surface: #191d23;
+$raised: #20252d;
+$line: #2a303a;
+$text: #c7ccd4;
+$muted: #6c7584;
+$faint: #465061;
+$accent: #8ea2ff;
+$accent-ink: #14171c;
+$ok: #7ccf9e;
+$fail: #f07a7d;
+$busy: #e7bf72;
+$select: #2f3b5c;
 
 Screen {
-    background: #1f1f1f;
-    color: #cccccc;
+    background: $bg;
+    color: $text;
     layers: base overlay;
+}
+
+* {
+    scrollbar-size: 1 1;
+    scrollbar-background: $bg;
+    scrollbar-background-hover: $bg;
+    scrollbar-background-active: $bg;
+    scrollbar-color: $line;
+    scrollbar-color-hover: $faint;
+    scrollbar-color-active: $muted;
+    scrollbar-corner-color: $bg;
+}
+
+Tooltip {
+    background: $raised;
+    color: $text;
+    border: none;
+    padding: 0 1;
 }
 
 #workspace-body {
     height: 1fr;
 }
 
-/* Explorer Sidebar */
+/* ---------- Sidebar ---------- */
+
 #sidebar {
-    width: 28;
-    min-width: 20;
-    max-width: 42;
-    background: #181818;
-    border-right: solid #2b2b2b;
+    width: 30;
+    background: $bg;
 }
 
-#sidebar-title {
-    height: 2;
-    background: #181818;
-    color: #858585;
-    padding: 1 2 0 2;
+/* The sidebar's edge doubles as its resize handle: it lights up on hover. */
+#sidebar-handle {
+    width: 1;
+    height: 1fr;
+    background: $bg;
+    color: $line;
+    pointer: ew-resize;
+}
+
+#sidebar-handle:hover,
+#sidebar-handle.-hover,
+#sidebar-handle.-dragging {
+    color: $accent;
     text-style: bold;
+}
+
+.spacer {
+    width: 1fr;
+    height: 1;
 }
 
 #sidebar-folder-bar {
     height: 2;
-    background: #181818;
-    border-bottom: solid #2b2b2b;
+    margin: 1 0 1 0;
+    background: $bg;
+}
+
+#sidebar-actions {
+    height: 1;
+    padding: 0 0 0 1;
 }
 
 #sidebar-folder {
     width: 1fr;
     height: 1;
-    background: #181818;
-    color: #cccccc;
     padding: 0 1 0 2;
+    color: $text;
     text-style: bold;
+    text-overflow: ellipsis;
+    text-wrap: nowrap;
 }
 
 .sidebar-tool-btn {
     width: auto;
     min-width: 3;
     height: 1;
-    background: #181818;
-    color: #858585;
+    background: $bg;
+    color: $muted;
     border: none;
     padding: 0 1;
+    text-style: none;
 }
 
 .sidebar-tool-btn:hover,
 .sidebar-tool-btn:focus {
-    background: #2a2d2e;
-    color: #ffffff;
+    background: $raised;
+    color: $text;
+    text-style: none;
 }
 
 #no-folder-box {
     height: 1fr;
     padding: 1 2;
-    background: #181818;
+    background: $bg;
 }
 
 #no-folder-text {
-    color: #9d9d9d;
+    color: $muted;
     margin-bottom: 1;
 }
 
 #sidebar-open-folder-btn {
     width: 100%;
-    height: 3;
-    background: #0078d4;
-    color: #ffffff;
+    height: 1;
+    background: $raised;
+    color: $text;
     border: none;
-    content-align: center middle;
     margin-bottom: 1;
+    text-style: none;
 }
 
 #sidebar-open-folder-btn:hover,
 #sidebar-open-folder-btn:focus {
-    background: #1a86d9;
+    background: $accent;
+    color: $accent-ink;
     text-style: bold;
 }
 
 #no-folder-hint {
-    color: #6e7681;
+    color: $faint;
 }
 
 #file-tree {
     height: 1fr;
-    background: #181818;
-    color: #cccccc;
+    background: $bg;
+    color: $text;
     border: none;
-    padding: 0 1;
-    scrollbar-size: 1 1;
-    scrollbar-background: #181818;
-    scrollbar-color: #3a3a3a;
-    scrollbar-color-hover: #525252;
-    scrollbar-color-active: #686868;
+    padding: 0 0 0 1;
 }
 
 #file-tree:focus {
     border: none;
 }
 
-/* Main Column */
+#file-tree > .tree--cursor {
+    background: $raised;
+    color: $text;
+    text-style: none;
+}
+
+#file-tree:focus > .tree--cursor {
+    background: $select;
+    color: $text;
+    text-style: bold;
+}
+
+#file-tree > .tree--guides,
+#file-tree > .tree--guides-hover,
+#file-tree > .tree--guides-selected {
+    color: $line;
+}
+
+#file-tree > .directory-tree--folder {
+    color: $text;
+    text-style: bold;
+}
+
+#file-tree > .directory-tree--file {
+    color: $text;
+}
+
+#file-tree > .directory-tree--extension {
+    color: $muted;
+    text-style: none;
+}
+
+#file-tree > .directory-tree--hidden {
+    color: $faint;
+}
+
+/* ---------- Editors ---------- */
+
 #main-pane {
     width: 1fr;
     height: 1fr;
-    background: #1f1f1f;
+    background: $surface;
 }
 
 #editors-row {
     height: 1fr;
 }
 
-#left-editor-col {
-    width: 1fr;
-    height: 1fr;
-    background: #1f1f1f;
-}
-
+#left-editor-col,
 #right-editor-col {
     width: 1fr;
     height: 1fr;
-    background: #1f1f1f;
-    border-left: solid #2b2b2b;
+    background: $surface;
 }
 
+#right-editor-col {
+    border-left: vkey $line;
+}
+
+/* Tabs are two rows tall: a hairline row on top that turns accent on the
+ * active tab (like VS Code), then the name and its close button. */
 #tab-bar,
 #right-tab-bar {
     height: 2;
-    background: #181818;
-    border-bottom: solid #2b2b2b;
+    background: $bg;
 }
 
 #left-tabs,
 #right-tabs {
     width: 1fr;
-    height: 1;
-    background: #181818;
+    height: 2;
+    background: $bg;
 }
 
 #active-tab {
     width: auto;
-    height: 1;
-    background: #1f1f1f;
-    color: #e5e5e5;
+    height: 2;
+    background: $surface;
+    color: $text;
     padding: 0 2;
+    border-top: tall $accent;
     text-style: bold;
+}
+
+.editor-tab {
+    width: auto;
+    height: 2;
+    background: $bg;
+    border-top: tall $bg;
+}
+
+.editor-tab:hover {
+    background: $raised;
+    border-top: tall $raised;
+}
+
+/* Active: shares the editor's surface color and carries the accent line. */
+.editor-tab.-active {
+    background: $surface;
+    border-top: tall $accent;
 }
 
 .editor-tab-btn {
     width: auto;
-    min-width: 6;
+    min-width: 4;
     height: 1;
-    background: #181818;
-    color: #858585;
+    background: transparent;
+    color: $muted;
     border: none;
-    padding: 0 2;
+    padding: 0 0 0 2;
+    text-style: none;
 }
 
-.editor-tab-btn:hover {
-    background: #252526;
-    color: #cccccc;
+.editor-tab-btn:hover,
+.editor-tab-btn:focus {
+    background: transparent;
+    color: $text;
+    text-style: none;
 }
 
-.editor-tab-btn.-active {
-    background: #1f1f1f;
-    color: #ffffff;
+.editor-tab.-active .editor-tab-btn {
+    color: $text;
     text-style: bold;
+}
+
+.editor-tab-close {
+    width: 3;
+    min-width: 3;
+    height: 1;
+    background: transparent;
+    color: $faint;
+    border: none;
+    padding: 0 1;
+    text-style: none;
+}
+
+.editor-tab.-active .editor-tab-close {
+    color: $muted;
+}
+
+.editor-tab-close:hover {
+    background: $line;
+    color: $text;
+    text-style: none;
+}
+
+.editor-tab.-dirty .editor-tab-close {
+    color: $busy;
 }
 
 #tab-meta {
     width: auto;
-    max-width: 34;
+    max-width: 40;
     height: 1;
-    background: #181818;
-    color: #6e7681;
+    margin-top: 1;
+    background: $bg;
+    color: $faint;
     padding: 0 1;
-    text-align: right;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
-/* Home View (No Folder Open) */
+#editor,
+#editor-right {
+    height: 1fr;
+    min-height: 5;
+    background: $surface;
+    border: none;
+    padding: 0;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+}
+
+#editor:focus,
+#editor-right:focus {
+    border: none;
+}
+
+/* ---------- Welcome ---------- */
+
 #welcome-view {
     height: 1fr;
-    background: #1f1f1f;
+    background: $surface;
     align: center middle;
     padding: 2 4;
 }
 
 #welcome-card {
-    width: 60;
+    width: 56;
     max-width: 92%;
     height: auto;
-    background: #1f1f1f;
+    background: $surface;
     padding: 1 2;
 }
 
 #welcome-title {
-    color: #e5e5e5;
-    text-style: bold;
     margin-bottom: 0;
 }
 
 #welcome-subtitle {
-    color: #858585;
+    color: $muted;
     margin-bottom: 2;
 }
 
 #home-open-folder-btn {
-    width: 30;
-    height: 3;
-    background: #0078d4;
-    color: #ffffff;
+    width: auto;
+    min-width: 24;
+    height: 1;
+    padding: 0 2;
+    background: $accent;
+    color: $accent-ink;
     border: none;
-    content-align: center middle;
+    text-style: bold;
     margin-bottom: 2;
 }
 
 #home-open-folder-btn:hover,
 #home-open-folder-btn:focus {
-    background: #1a86d9;
+    background: #a9b8ff;
+    color: $accent-ink;
     text-style: bold;
 }
 
@@ -232,15 +385,22 @@ Screen {
 }
 
 .welcome-section-title {
-    color: #cccccc;
-    text-style: bold;
+    color: $muted;
     margin-bottom: 1;
+}
+
+#recent-list,
+#palette-list,
+#picker-list,
+#folder-list {
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 #recent-list {
     height: auto;
     max-height: 8;
-    background: #1f1f1f;
+    background: $surface;
     border: none;
     padding: 0;
 }
@@ -249,98 +409,187 @@ Screen {
     border: none;
 }
 
+#recent-list > .option-list--option-highlighted {
+    background: $raised;
+    color: $text;
+    text-style: none;
+}
+
+#recent-list:focus > .option-list--option-highlighted {
+    background: $select;
+}
+
 #recent-empty {
-    color: #6e7681;
+    color: $faint;
 }
 
 #welcome-tip {
-    color: #6e7681;
+    color: $faint;
     margin-top: 2;
 }
 
-/* Code Editors */
-#editor,
-#editor-right {
-    height: 1fr;
-    min-height: 5;
-    background: #1f1f1f;
-    border: none;
-    padding: 0;
-    scrollbar-size: 1 1;
-    scrollbar-background: #1f1f1f;
-    scrollbar-color: #3a3a3a;
-    scrollbar-color-hover: #525252;
-    scrollbar-color-active: #686868;
-}
+/* ---------- Completion popup ---------- */
 
-#editor:focus,
-#editor-right:focus {
-    border: none;
-}
-
-/* Floating Autocomplete Popup */
 #completion-popup {
     layer: overlay;
     width: 32;
     height: auto;
     max-height: 9;
-    background: #252526;
-    border: solid #454545;
-    color: #cccccc;
+    background: $raised;
+    border: none;
+    color: $text;
     padding: 0;
     display: none;
 }
 
-/* Terminal / Output Panel */
+#completion-popup > .option-list--option-highlighted {
+    background: $select;
+    color: $text;
+    text-style: bold;
+}
+
+/* ---------- Find / replace bar ---------- */
+
+#find-bar {
+    height: auto;
+    background: $raised;
+    border-top: tall $accent;
+    padding: 0 1;
+}
+
+#find-row,
+#replace-row {
+    height: 1;
+}
+
+#find-input,
+#replace-input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    background: $bg;
+    color: $text;
+    padding: 0 1;
+}
+
+#find-input:focus,
+#replace-input:focus {
+    border: none;
+    background: $bg;
+}
+
+#find-input > .input--placeholder,
+#replace-input > .input--placeholder {
+    color: $faint;
+}
+
+#find-count {
+    width: 16;
+    height: 1;
+    padding: 0 1;
+    text-wrap: nowrap;
+}
+
+.find-btn {
+    width: auto;
+    min-width: 3;
+    height: 1;
+    background: $raised;
+    color: $muted;
+    border: none;
+    padding: 0 1;
+    margin-left: 1;
+    text-style: none;
+}
+
+.find-btn:hover,
+.find-btn:focus {
+    background: $line;
+    color: $text;
+    text-style: none;
+}
+
+/* Toggles that are on (Aa / .*) take the accent so their state is visible. */
+.find-btn.-on {
+    background: $accent;
+    color: $accent-ink;
+    text-style: bold;
+}
+
+#replace-row {
+    margin-top: 0;
+}
+
+/* ---------- Output panel ----------
+ * The one loud element: a stripe down the left edge that reports the last
+ * run at a glance — amber while running, green on exit 0, red on failure. */
+
 #output-pane {
     height: 10;
     min-height: 4;
-    background: #181818;
-    border-top: solid #2b2b2b;
+    background: $bg;
+    border-left: tall $bg;
 }
 
+/* Top edge of Output = resize handle; lights up like the sidebar edge. */
+#output-edge {
+    width: 1fr;
+    height: 1;
+    background: $bg;
+    color: $line;
+    pointer: ns-resize;
+}
+
+#output-edge:hover,
+#output-edge.-hover,
+#output-edge.-dragging,
+#output-header.-dragging {
+    color: $accent;
+    text-style: bold;
+}
+
+#output-pane.-running { border-left: tall $busy; }
+#output-pane.-ok      { border-left: tall $ok; }
+#output-pane.-fail    { border-left: tall $fail; }
+#output-pane.-stopped { border-left: tall $faint; }
+
 #output-header-bar {
-    height: 2;
-    background: #181818;
-    border-bottom: solid #242424;
+    height: 1;
+    background: $bg;
 }
 
 #output-header {
+    pointer: ns-resize;
     width: 1fr;
     height: 1;
-    background: #181818;
-    color: #9d9d9d;
-    padding: 0 2;
-    text-style: bold;
+    background: $bg;
+    padding: 0 1;
 }
 
 .term-tool-btn {
     width: auto;
     min-width: 3;
     height: 1;
-    background: #181818;
-    color: #858585;
+    background: $bg;
+    color: $muted;
     border: none;
     padding: 0 1;
+    text-style: none;
 }
 
 .term-tool-btn:hover,
 .term-tool-btn:focus {
-    background: #2a2d2e;
-    color: #e5e5e5;
+    background: $raised;
+    color: $text;
+    text-style: none;
 }
 
 #output-log {
     height: 1fr;
-    background: #181818;
-    color: #cccccc;
+    background: $bg;
+    color: $text;
     border: none;
     padding: 0 1;
-    scrollbar-size: 1 1;
-    scrollbar-background: #181818;
-    scrollbar-color: #3a3a3a;
-    scrollbar-color-hover: #525252;
-    scrollbar-color-active: #686868;
 }
 
 #output-log:focus {
@@ -350,79 +599,113 @@ Screen {
 #stdin-input {
     height: 1;
     border: none;
-    background: #252526;
-    color: #e5e5e5;
-    padding: 0 2;
+    background: $raised;
+    color: $text;
+    padding: 0 1;
 }
 
 #stdin-input:focus {
     border: none;
-    background: #2a2d2e;
+    background: $raised;
 }
 
-/* Bottom VS Code Status Bar */
+#stdin-input > .input--placeholder {
+    color: $faint;
+}
+
+/* ---------- Status bar ---------- */
+
 #status-bar {
     dock: bottom;
-    height: 2;
-    background: #181818;
-    border-top: solid #2b2b2b;
-    color: #9d9d9d;
+    height: 1;
+    background: $bg;
+    color: $muted;
+}
+
+.status-toggle {
+    width: auto;
+    min-width: 4;
+    height: 1;
+    background: $bg;
+    color: $faint;
+    border: none;
+    padding: 0 1;
+    text-style: none;
+}
+
+.status-toggle.-on {
+    color: $text;
+}
+
+.status-toggle:hover,
+.status-toggle:focus {
+    background: $raised;
+    color: $text;
+    text-style: none;
 }
 
 #status-left {
     width: 1fr;
     height: 1;
     padding: 0 2;
-    color: #9d9d9d;
 }
 
 #status-right {
     width: auto;
     height: 1;
     padding: 0 2;
-    color: #9d9d9d;
 }
 
-/* Modal Dialogs */
+/* ---------- Modals ---------- */
+
 CommandPaletteModal,
 TextInputModal,
 FilePickerModal,
 FolderPickerModal,
 ConfirmModal,
 UnsavedChangesModal {
-    align: center middle;
-    background: rgba(0, 0, 0, 0.55);
+    align: center top;
+    padding-top: 4;
+    background: rgba(8, 10, 14, 0.6);
 }
 
 .modal-box {
-    width: 74;
+    width: 72;
     max-width: 92%;
     height: auto;
     max-height: 84%;
-    background: #222222;
-    border: solid #3c3c3c;
+    background: $raised;
+    border: none;
+    border-top: tall $accent;
     padding: 1 2;
 }
 
 .modal-title {
     text-style: bold;
-    color: #e5e5e5;
+    color: $text;
     margin-bottom: 1;
 }
 
 .modal-subtitle {
-    color: #9d9d9d;
+    color: $muted;
     margin-bottom: 1;
 }
 
 .modal-box Input {
-    background: #181818;
-    border: solid #3c3c3c;
-    color: #e5e5e5;
+    height: 1;
+    background: $bg;
+    border: none;
+    color: $text;
+    padding: 0 1;
 }
 
 .modal-box Input:focus {
-    border: solid #0078d4;
+    border: none;
+    background: $bg;
+}
+
+.modal-box Input > .input--placeholder {
+    color: $faint;
 }
 
 .quick-bar {
@@ -433,17 +716,19 @@ UnsavedChangesModal {
 .quick-btn {
     height: 1;
     min-width: 6;
-    background: #2b2b2b;
-    color: #cccccc;
+    background: $bg;
+    color: $muted;
     border: none;
     margin-right: 1;
     padding: 0 1;
+    text-style: none;
 }
 
 .quick-btn:hover,
 .quick-btn:focus {
-    background: #37373d;
-    color: #ffffff;
+    background: $line;
+    color: $text;
+    text-style: none;
 }
 
 #palette-list,
@@ -452,11 +737,16 @@ UnsavedChangesModal {
     height: 13;
     max-height: 17;
     margin-top: 1;
-    border: solid #2b2b2b;
-    background: #181818;
-    scrollbar-size: 1 1;
-    scrollbar-background: #181818;
-    scrollbar-color: #3a3a3a;
+    border: none;
+    background: $raised;
+}
+
+#palette-list > .option-list--option-highlighted,
+#picker-list > .option-list--option-highlighted,
+#folder-list > .option-list--option-highlighted {
+    background: $select;
+    color: $text;
+    text-style: bold;
 }
 
 .modal-buttons {
@@ -468,28 +758,39 @@ UnsavedChangesModal {
 .modal-buttons Button {
     margin-left: 1;
     height: 1;
+    min-width: 8;
     padding: 0 2;
     border: none;
-    background: #333333;
-    color: #e5e5e5;
+    background: $line;
+    color: $text;
+    text-style: none;
 }
 
 .modal-buttons Button:hover,
 .modal-buttons Button:focus {
-    background: #424242;
+    background: $faint;
+    text-style: none;
 }
 
 .modal-buttons Button.-primary {
-    background: #0078d4;
-    color: #ffffff;
+    background: $accent;
+    color: $accent-ink;
+    text-style: bold;
 }
 
 .modal-buttons Button.-primary:hover,
 .modal-buttons Button.-primary:focus {
-    background: #1a86d9;
+    background: #a9b8ff;
 }
 
 .modal-buttons Button.-error {
-    background: #a1260d;
-    color: #ffffff;
+    background: $fail;
+    color: $accent-ink;
+    text-style: bold;
+}
+
+/* Buttons in the two-row tab bars sit on the label row. */
+#tab-bar .term-tool-btn,
+#right-tab-bar .term-tool-btn {
+    margin-top: 1;
 }
