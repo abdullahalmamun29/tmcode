@@ -833,3 +833,47 @@ async def test_panels_resize_hide_and_tab_close(tmp_path: Path) -> None:
         await pilot.click("#discard-btn")
         await pilot.pause()
         assert [t.title for t in app.left_pane.tabs] == ["b.py"]
+
+
+async def test_brackets_and_quotes_auto_close_in_editor(tmp_path: Path) -> None:
+    src = tmp_path / "a.py"
+    src.write_text("", encoding="utf-8")
+    app = TermCodeApp(tmp_path, src, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        editor = app.query_one("#editor", TextArea)
+        editor.focus()
+        await pilot.pause()
+
+        # Type print("hi") naturally: ( and " auto-close, then ) and " step over.
+        await pilot.press(*'print("hi")')
+        await pilot.pause()
+        assert editor.text == 'print("hi")'
+        assert editor.cursor_location == (0, 11)
+
+        # Backspace inside an empty pair removes both halves.
+        await pilot.press("space", "x", "space", "=", "space", "[")
+        assert editor.text == 'print("hi") x = []'
+        await pilot.press("backspace")
+        assert editor.text == 'print("hi") x = '
+
+        # Enter between braces opens an indented block.
+        editor.load_text("d = ")
+        editor.move_cursor((0, 4))
+        await pilot.press("{", "enter")
+        assert editor.text == "d = {\n    \n}"
+        assert editor.cursor_location == (1, 4)
+
+        # A selection gets wrapped.
+        editor.load_text("value")
+        editor.select_all()
+        await pilot.press("(")
+        assert editor.text == "(value)"
+        assert editor.selected_text == "value"
+
+        # One undo removes an auto-inserted pair.
+        editor.load_text("")
+        await pilot.press("[")
+        assert editor.text == "[]"
+        await pilot.press("ctrl+z")
+        assert editor.text == ""

@@ -16,6 +16,7 @@ from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.widgets.text_area import Selection
 from textual.widgets import Button, DirectoryTree, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
@@ -30,6 +31,7 @@ from termcode import __version__, theme
 from termcode.findbar import FindBar
 from termcode.formatting import format_code
 from termcode.highlighting import register_extra_languages
+from termcode.pairs import CLOSERS, PAIRS, plan_backspace, plan_enter, plan_typed
 from termcode.modals import (
     CommandPaletteModal,
     ConfirmModal,
@@ -348,6 +350,11 @@ class CodeTextArea(TextArea):
                 event.stop()
                 return
 
+        if self._handle_pairs(event):
+            event.prevent_default()
+            event.stop()
+            return
+
         if event.key == "enter":
             row, col = self.cursor_location
             line_before = self.document.get_line(row)[:col]
@@ -368,6 +375,53 @@ class CodeTextArea(TextArea):
                 return
 
         await super()._on_key(event)
+
+    def _handle_pairs(self, event: events.Key) -> bool:
+        """Auto-close brackets/quotes, step over closers, delete empty pairs. True if handled."""
+        char = event.character or ""
+        selection = self.selection
+        has_selection = selection.start != selection.end
+
+        if has_selection:
+            if char not in PAIRS:
+                return False
+            # Wrap the selection: select `abc`, type ( → (abc), still selected.
+            start, end = sorted((selection.start, selection.end))
+            inner = self.selected_text
+            self.replace(char + inner + PAIRS[char], start, end)
+            end_col = end[1] + 1 if start[0] == end[0] else end[1]
+            self.selection = Selection((start[0], start[1] + 1), (end[0], end_col))
+            return True
+
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+
+        if event.key == "backspace":
+            span = plan_backspace(line, col)
+            if span is None:
+                return False
+            self.delete((row, span[0]), (row, span[1]))
+            return True
+
+        if event.key == "enter":
+            unit = "\t" if line.startswith("\t") else "    "
+            planned = plan_enter(line, col, unit)
+            if planned is None:
+                return False
+            text, offset = planned
+            self.insert(text)
+            self.move_cursor((row + 1, offset - 1))
+            return True
+
+        if char in PAIRS or char in CLOSERS:
+            edit = plan_typed(char, line, col, self.language)
+            if edit is None:
+                return False
+            if edit.text:
+                self.replace(edit.text, (row, edit.start), (row, edit.end))
+            self.move_cursor((row, edit.cursor))
+            return True
+        return False
 
 
 class FilteredDirectoryTree(DirectoryTree):

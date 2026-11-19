@@ -8,6 +8,7 @@ Lightweight, cross-platform VS Code-style terminal code editor and runner for **
 - VS Code Dark Modern 3-pane layout: Explorer with `+F`/`+D` buttons, multi-tab + side-by-side split editor (`F12`), and draggable/resizable Terminal panel
 - VS Code Dark+ syntax colors across **17 languages** (Python, C, C++, JS/TS, HTML, CSS, JSON, Java, Go, Rust, Bash, SQL, Markdown, YAML, TOML, XML, Regex)
 - Lightweight offline code suggestions (language builtins + open-file words) and automatic indentation while typing
+- Auto-closing brackets and quotes like VS Code: `(` `[` `{` `"` `'` insert their partner, typing the closer steps over it, Backspace removes an empty pair, Enter inside `{}` opens an indented block, and typing a bracket with text selected wraps it
 - Unified `/run` (`F5`) supporting **Python, C, C++, JavaScript, TypeScript, Bash, Go, Rust, Java, Ruby, PHP, Perl, and Lua** with live interactive keyboard input
 - Real OS clipboard integration (Linux X11/Wayland, macOS, Windows), `Ctrl+A` select-all, and VS Code-style `Ctrl+C` (copies selection or current line)
 - Searchable `/` command menu (`Ctrl+K` anywhere, or `/` outside text inputs) with a shortcut for every action
