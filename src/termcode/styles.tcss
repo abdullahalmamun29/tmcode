@@ -794,3 +794,10 @@ UnsavedChangesModal {
 #right-tab-bar .term-tool-btn {
     margin-top: 1;
 }
+
+/* Clickable lists (folder picker, recent folders, command menu, file tree)
+ * ask for the hand pointer. Terminals that support OSC 22 (Ghostty, kitty,
+ * WezTerm, foot, xterm) show it; others keep their normal pointer. */
+OptionList, Tree {
+    pointer: pointer;
+}

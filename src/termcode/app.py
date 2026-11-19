@@ -482,7 +482,7 @@ class TermCodeApp(App[None]):
     """Lightweight VS Code-style terminal editor and runner for all major languages."""
 
     CSS_PATH = "styles.tcss"
-    TITLE = "TermCode"
+    TITLE = "TmCode"
     ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
@@ -639,7 +639,7 @@ class TermCodeApp(App[None]):
                             with Vertical(id="welcome-card"):
                                 yield Static(
                                     Text.assemble(
-                                        ("termcode", f"bold {theme.TEXT}"),
+                                        ("tmcode", f"bold {theme.TEXT}"),
                                         (f"  {__version__}", theme.FAINT),
                                     ),
                                     id="welcome-title",
@@ -666,7 +666,7 @@ class TermCodeApp(App[None]):
                                         markup=False,
                                     )
                                 yield Static(
-                                    "Run termcode inside a project folder to skip this screen.",
+                                    "Run tmcode inside a project folder to skip this screen.",
                                     id="welcome-tip",
                                     markup=False,
                                 )
@@ -1657,7 +1657,7 @@ class TermCodeApp(App[None]):
         return True
 
     def action_open_shell(self) -> None:
-        """Ctrl+T: open the user's own shell; `exit` comes back to TermCode."""
+        """Ctrl+T: open the user's own shell; `exit` comes back to TmCode."""
         if not self._on_main_screen():
             return
         if self.runner.is_running:
@@ -1669,7 +1669,7 @@ class TermCodeApp(App[None]):
 
         def _shell() -> None:
             self._tty_write(
-                f"\x1b[2J\x1b[H\x1b[2mTermCode is paused. You're in {cwd}. "
+                f"\x1b[2J\x1b[H\x1b[2mTmCode is paused. You're in {cwd}. "
                 "Type exit to come back.\x1b[0m\n"
             )
             try:

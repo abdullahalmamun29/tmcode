@@ -34,7 +34,7 @@ def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path | N
         target = base / target
 
     if not target.exists():
-        raise SystemExit(f"termcode: path not found: {arg}")
+        raise SystemExit(f"tmcode: path not found: {arg}")
 
     resolved = target.resolve()
     if resolved.is_dir():
@@ -44,7 +44,7 @@ def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path | N
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="termcode",
+        prog="tmcode",
         description="Lightweight VS Code-style terminal editor and runner for Python, C, and C++.",
     )
     parser.add_argument(

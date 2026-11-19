@@ -209,7 +209,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
         action="request_quit",
         shortcut="Ctrl+Q",
         binding="ctrl+q",
-        description="Exit TermCode",
+        description="Exit TmCode",
     ),
 )
 

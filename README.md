@@ -1,10 +1,10 @@
-# TermCode
+# TmCode
 
 Lightweight, cross-platform VS Code-style terminal code editor and runner for **Python**, **C**, and **C++**.
 
 ## Features
 
-- Launch right from any terminal (`termcode` from `~` opens the Home folder picker; `termcode` inside any project folder opens it directly)
+- Launch right from any terminal (`tmcode` from `~` opens the Home folder picker; `tmcode` inside any project folder opens it directly)
 - VS Code Dark Modern 3-pane layout: Explorer with `+F`/`+D` buttons, multi-tab + side-by-side split editor (`F12`), and draggable/resizable Terminal panel
 - VS Code Dark+ syntax colors across **17 languages** (Python, C, C++, JS/TS, HTML, CSS, JSON, Java, Go, Rust, Bash, SQL, Markdown, YAML, TOML, XML, Regex)
 - Lightweight offline code suggestions (language builtins + open-file words) and automatic indentation while typing
@@ -64,10 +64,10 @@ GitHub Actions runs the tests, builds TmCode for Linux, macOS (Intel + Apple Sil
 ## Usage
 
 ```bash
-termcode                  # From ~ opens the Home tab (folder selector & recent folders); from any project folder opens it directly
-termcode .                # Open current directory directly (from ~ this still shows the start page)
-termcode path/to/project  # Open a specific folder
-termcode path/to/main.py  # Open a specific file and its folder
+tmcode                    # From ~ opens the Home tab (folder selector & recent folders); from any project folder opens it directly
+tmcode .                  # Open current directory directly (from ~ this still shows the start page)
+tmcode path/to/project    # Open a specific folder
+tmcode path/to/main.py    # Open a specific file and its folder
 ```
 
 ## `/` Command Menu & Shortcuts
@@ -96,7 +96,7 @@ Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the f
 | `/next-tab` | `F11` | Switch to the next open file tab |
 | `/close-tab` | `Ctrl+W` | Close the current file tab |
 | `/split-editor` | `F12` | Toggle side-by-side split editor |
-| `/quit` | `Ctrl+Q` | Exit TermCode |
+| `/quit` | `Ctrl+Q` | Exit TmCode |
 
 ## Running Tests
 

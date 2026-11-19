@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmcode"
-version = "0.2.1"
+version = "0.2.2"
 description = "TmCode: a lightweight terminal code editor with run, find/replace, format-on-save and a real-terminal mode"
 readme = "README.md"
 requires-python = ">=3.10"
