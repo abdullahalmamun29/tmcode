@@ -47,7 +47,7 @@ jobs:
           - ubuntu-22.04       # Linux x86_64 (works on glibc 2.35+: Ubuntu 22.04, Mint 21, Debian 12 and newer)
           - ubuntu-22.04-arm   # Linux arm64
           - macos-15-intel     # macOS Intel
-          - macos-14           # macOS Apple Silicon
+          - macos-latest       # macOS Apple Silicon
           - windows-latest     # Windows x86_64
     runs-on: ${{ matrix.os }}
     defaults:
