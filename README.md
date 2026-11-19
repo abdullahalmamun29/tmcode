@@ -14,35 +14,36 @@ Lightweight, cross-platform VS Code-style terminal code editor and runner for **
 
 ## Installation
 
-TmCode needs **Python 3.10+**. The easiest way is [pipx](https://pipx.pypa.io), which installs it in its own isolated environment and puts the `tmcode` command on your PATH.
+One command, no Python needed:
 
-### Linux / macOS
+**macOS / Linux**
 ```bash
-python3 -m pip install --user pipx    # or: sudo apt install pipx / brew install pipx
-python3 -m pipx ensurepath            # then open a new terminal
-pipx install tmcode
+curl -fsSL https://raw.githubusercontent.com/abdullahalmamun29/tmcode/main/install.sh | sh
 ```
 
-### Windows (PowerShell)
+**Windows** (PowerShell)
 ```powershell
-py -m pip install --user pipx
-py -m pipx ensurepath                 # then open a new terminal
-pipx install tmcode
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/abdullahalmamun29/tmcode/main/install.ps1 | iex"
 ```
 
-Then run `tmcode` (the old `termcode` command works too).
+Then open a new terminal and run `tmcode` inside a project folder.
 
-**Update:** `pipx upgrade tmcode` · **Uninstall:** `pipx uninstall tmcode`
+The installer downloads the ready-made TmCode for your system from [Releases](https://github.com/abdullahalmamun29/tmcode/releases) (and checks its SHA-256). If there is none for your system, it installs TmCode with [uv](https://docs.astral.sh/uv/) instead, which fetches Python by itself.
 
-Install the latest code straight from GitHub instead of PyPI:
+- **Update:** run the same command again.
+- **Uninstall (macOS / Linux):** `rm -rf ~/.local/share/tmcode ~/.local/bin/tmcode ~/.local/bin/termcode`
+- **Uninstall (Windows):** delete `%LOCALAPPDATA%\tmcode` and remove it from your user PATH.
+
+### Already have Python? Install from PyPI
+
 ```bash
-pipx install git+https://github.com/abdullahalmamun29/tmcode.git
+pipx install tmcode        # or: uv tool install tmcode
 ```
 
-### Optional extras
+### Good to know
 - To **run** code you need the language itself installed: `python3`, `gcc`/`g++` for C/C++, `node`, `go`, `rustc`, `java`, etc.
 - **Format on save** works out of the box with a built-in re-indenter. If `ruff`/`black`, `clang-format`, `prettier`, `gofmt` or `rustfmt` are installed, TmCode uses them automatically.
-- The resize pointer (↔ ↕ on panel edges) shows in kitty, WezTerm, Ghostty, foot and xterm; other terminals show the highlighted grip instead.
+- On Windows use **Windows Terminal**. The resize pointer (↔ ↕ on panel edges) shows in kitty, WezTerm, Ghostty, foot and xterm; other terminals show the highlighted grip instead.
 
 ### From source (for development)
 ```bash
@@ -52,6 +53,13 @@ python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest
 ```
+
+### Making a release (maintainers)
+Bump `version` in `pyproject.toml`, commit, then push a tag:
+```bash
+git tag v0.2.1 && git push origin v0.2.1
+```
+GitHub Actions runs the tests, builds TmCode for Linux, macOS (Intel + Apple Silicon) and Windows, and publishes a Release with checksums. See `.github/workflows/release.yml` to also publish to PyPI automatically.
 
 ## Usage
 
