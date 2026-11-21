@@ -877,3 +877,55 @@ async def test_brackets_and_quotes_auto_close_in_editor(tmp_path: Path) -> None:
         assert editor.text == "[]"
         await pilot.press("ctrl+z")
         assert editor.text == ""
+
+
+async def test_update_prompt_choices(tmp_path: Path) -> None:
+    import json as _json
+
+    from termcode.modals import UpdateModal
+
+    app = TermCodeApp(tmp_path, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+
+        # Skip: closes, remembers nothing.
+        app._prompt_update("9.9.9")
+        await pilot.pause()
+        assert isinstance(app.screen, UpdateModal)
+        await pilot.click("#update-skip-btn")
+        await pilot.pause()
+        assert not isinstance(app.screen, UpdateModal)
+        assert not (tmp_path / "update.json").exists()
+
+        # Skip until next version: remembered in update.json.
+        app._prompt_update("9.9.9")
+        await pilot.pause()
+        await pilot.click("#update-skip-version-btn")
+        await pilot.pause()
+        assert _json.loads((tmp_path / "update.json").read_text())["skipped"] == "9.9.9"
+
+        # Update now: the app closes and asks cli.main to run the update.
+        app._prompt_update("9.9.9")
+        await pilot.pause()
+        await pilot.click("#update-now-btn")
+        await pilot.pause()
+        await pilot.pause()
+    assert app.update_to == "9.9.9"
+
+
+async def test_any_language_gets_colors_via_pygments(tmp_path: Path) -> None:
+    src = tmp_path / "Main.kt"
+    src.write_text('fun main() {\n    println("hi") // say hi\n}\n', encoding="utf-8")
+    app = TermCodeApp(tmp_path, src, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        editor = app.query_one("#editor", TextArea)
+        assert editor.language is None  # no tree-sitter grammar for Kotlin
+        names = {n for line in editor._highlights.values() for *_r, n in line}
+        assert {"keyword", "string", "comment"} <= names
+        # Typing keeps colors up to date.
+        editor.move_cursor((2, 1))
+        editor.insert('\n// done')
+        await pilot.pause()
+        assert any(n == "comment" for *_r, n in editor._highlights[3])
+        assert "Kotlin" in str(app.query_one("#status-right").render())

@@ -81,7 +81,7 @@ def test_build_run_plan_win32_exe_and_missing_compiler(tmp_path: Path) -> None:
 
     txt_file = tmp_path / "notes.txt"
     txt_file.write_text("hello", encoding="utf-8")
-    with pytest.raises(RunnerError, match="Unsupported file type"):
+    with pytest.raises(RunnerError, match="doesn.t know how to run"):
         build_run_plan(txt_file, tmp_path, tmp_path / "tmp")
 
 
@@ -281,3 +281,74 @@ async def test_multi_language_plans_and_node_bash_execution(tmp_path: Path) -> N
         res = await runner.run(path, tmp_path, chunks.append)
         assert res.exit_code == 0 and not res.compile_failed
         assert expected in "".join(chunks)
+
+
+def _which_all(name: str) -> str:
+    return f"/usr/bin/{name}"
+
+
+def test_many_more_languages_run(tmp_path: Path) -> None:
+    cases = {
+        "a.kt": ("kotlinc", "java"),
+        "a.swift": (None, "swift"),
+        "a.hs": (None, "runghc"),
+        "a.exs": (None, "elixir"),
+        "a.jl": (None, "julia"),
+        "a.zig": (None, "zig"),
+        "a.f90": ("gfortran", None),
+        "a.dart": (None, "dart"),
+        "a.r": (None, "Rscript"),
+    }
+    for name, (compiler, runner) in cases.items():
+        src = tmp_path / name
+        src.write_text("", encoding="utf-8")
+        plan = build_run_plan(src, tmp_path, tmp_path / "t", which=_which_all, user_commands={})
+        if compiler:
+            assert plan.compile_cmd and plan.compile_cmd[0] == f"/usr/bin/{compiler}", name
+        if runner:
+            assert plan.run_cmd[0] == f"/usr/bin/{runner}", name
+        assert str(src) in " ".join((plan.compile_cmd or []) + plan.run_cmd), name
+
+
+def test_second_recipe_used_when_first_tool_missing(tmp_path: Path) -> None:
+    src = tmp_path / "a.scala"
+    src.write_text("", encoding="utf-8")
+    plan = build_run_plan(src, tmp_path, tmp_path / "t",
+                          which=lambda n: "/usr/bin/scala" if n == "scala" else None, user_commands={})
+    assert plan.run_cmd == ["/usr/bin/scala", str(src)]
+
+
+def test_missing_tool_message_names_language(tmp_path: Path) -> None:
+    src = tmp_path / "a.kt"
+    src.write_text("", encoding="utf-8")
+    with pytest.raises(RunnerError, match="Install Kotlin"):
+        build_run_plan(src, tmp_path, tmp_path / "t", which=lambda _n: None, user_commands={})
+
+
+def test_shebang_runs_files_without_known_extension(tmp_path: Path) -> None:
+    src = tmp_path / "tool"
+    src.write_text("#!/usr/bin/env -S ruby -w\nputs 1\n", encoding="utf-8")
+    plan = build_run_plan(src, tmp_path, tmp_path / "t", which=_which_all, user_commands={})
+    assert plan.run_cmd == ["/usr/bin/ruby", "-w", str(src)]
+
+
+def test_user_run_commands_override_and_extend(tmp_path: Path) -> None:
+    cfg = tmp_path / "run-commands.json"
+    cfg.write_text(
+        '{".foo": "foorun --fast {file}",'
+        ' "py": "mypython {file}",'
+        ' ".bar": {"compile": "barc {file} -o {out}", "run": "{out}"}}',
+        encoding="utf-8",
+    )
+    foo = tmp_path / "x.foo"; foo.write_text("", encoding="utf-8")
+    py = tmp_path / "x.py"; py.write_text("", encoding="utf-8")
+    bar = tmp_path / "x.bar"; bar.write_text("", encoding="utf-8")
+    t = tmp_path / "t"
+
+    assert build_run_plan(foo, tmp_path, t, which=_which_all, user_commands=cfg).run_cmd == [
+        "/usr/bin/foorun", "--fast", str(foo)]
+    assert build_run_plan(py, tmp_path, t, which=_which_all, user_commands=cfg).run_cmd == [
+        "/usr/bin/mypython", str(py)]
+    plan = build_run_plan(bar, tmp_path, t, which=_which_all, user_commands=cfg, platform="linux")
+    assert plan.compile_cmd == ["/usr/bin/barc", str(bar), "-o", str(t / "app")]
+    assert plan.run_cmd == [str(t / "app")]

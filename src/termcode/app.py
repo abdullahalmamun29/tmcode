@@ -30,7 +30,7 @@ from termcode.completions import (
 from termcode import __version__, theme
 from termcode.findbar import FindBar
 from termcode.formatting import format_code
-from termcode.highlighting import register_extra_languages
+from termcode.highlighting import pygments_highlights, pygments_lexer_for, register_extra_languages
 from termcode.pairs import CLOSERS, PAIRS, plan_backspace, plan_enter, plan_typed
 from termcode.modals import (
     CommandPaletteModal,
@@ -39,6 +39,14 @@ from termcode.modals import (
     FolderPickerModal,
     TextInputModal,
     UnsavedChangesModal,
+    UpdateModal,
+)
+from termcode.update import (
+    InstallKind,
+    check_for_update,
+    default_state_path,
+    detect_install,
+    skip_version,
 )
 from termcode.search import parse_goto
 from termcode.runner import (
@@ -301,6 +309,27 @@ class CodeTextArea(TextArea):
         self.register_theme(theme.EDITOR_THEME)
         self.register_theme(theme.OUTPUT_THEME)
         self.theme = theme.OUTPUT_THEME_NAME if self.read_only else theme.EDITOR_THEME_NAME
+
+    # Pygments lexer used when the file's language has no tree-sitter grammar.
+    _fallback_lexer = None
+
+    def set_fallback_lexer(self, lexer) -> None:  # type: ignore[no-untyped-def]
+        if lexer is None and self._fallback_lexer is None:
+            return
+        self._fallback_lexer = lexer
+        self._build_highlight_map()
+        self.refresh()
+
+    def _build_highlight_map(self) -> None:
+        if self._fallback_lexer is None or self.language is not None:
+            super()._build_highlight_map()
+            return
+        self._line_cache.clear()
+        self._highlights.clear()
+        try:
+            self._highlights.update(pygments_highlights(self.text, self._fallback_lexer))
+        except Exception:
+            pass  # never let coloring break editing
 
     def action_copy(self) -> None:
         """Copy selected text, or the current line when nothing is selected (VS Code behavior)."""
@@ -597,6 +626,9 @@ class TermCodeApp(App[None]):
         self.output_visible: bool = True
         self.format_on_save: bool = True
         self._recent_store: Path | None = recent_store
+        # Set when the user picks "Update now"; cli.main runs the update after exit.
+        self.update_to: str | None = None
+        self.install_kind: InstallKind = detect_install()
         self._recent_folders: list[Path] = []
         self._completion_editor: CodeTextArea | None = None
         self._completion_prefix: str = ""
@@ -795,6 +827,8 @@ class TermCodeApp(App[None]):
         self.query_one("#find-bar").display = False
         self._set_run_state("idle")
         self._refresh_recent_list()
+        if not self.is_headless:
+            self.run_worker(self._check_for_update, thread=True, group="update-check", exit_on_error=False)
 
         if self.workspace_root is not None:
             record_recent_folder(self.workspace_root, store_path=self._recent_store)
@@ -861,9 +895,13 @@ class TermCodeApp(App[None]):
     def _apply_editor_language(self, editor: CodeTextArea, path: Path | None) -> None:
         wanted = editor_language_for_path(path)
         if wanted and wanted in editor.available_languages:
+            editor.set_fallback_lexer(None)
             editor.language = wanted
         else:
             editor.language = None
+            # No tree-sitter grammar: color it with Pygments (hundreds of languages).
+            lexer = pygments_lexer_for(path.name, editor.text) if path is not None else None
+            editor.set_fallback_lexer(lexer)
 
     def _sync_buffer_from_editor(self, pane_id: str) -> None:
         pane = self._pane_for_id(pane_id)
@@ -923,6 +961,7 @@ class TermCodeApp(App[None]):
         self._suppress_dirty = True
         try:
             if buf is None:
+                editor.set_fallback_lexer(None)
                 editor.text = ""
                 editor.language = None
             else:
@@ -2273,6 +2312,40 @@ class TermCodeApp(App[None]):
             return
         self.output_history = ""
         self.query_one("#output-log", CodeTextArea).load_text("")
+
+    # ---------- update check ----------
+
+    def _update_state_path(self) -> Path:
+        if self._recent_store is not None:
+            return self._recent_store.parent / "update.json"
+        return default_state_path()
+
+    def _check_for_update(self) -> None:
+        """Runs in a thread at startup; network at most once a day, silent on failure."""
+        latest = check_for_update(__version__, self.install_kind, self._update_state_path())
+        if latest:
+            self.call_from_thread(self._prompt_update, latest)
+
+    def _prompt_update(self, latest: str) -> None:
+        how = {
+            InstallKind.BINARY: "Update now downloads it and closes TmCode.",
+            InstallKind.PIPX: "Update now runs pipx upgrade tmcode and closes TmCode.",
+            InstallKind.UV: "Update now runs uv tool upgrade tmcode and closes TmCode.",
+            InstallKind.PIP: "Update now runs pip install --upgrade tmcode and closes TmCode.",
+        }.get(self.install_kind, "")
+
+        def _chosen(choice: str | None) -> None:
+            if choice == "update":
+                def _go() -> None:
+                    self.update_to = latest
+                    self._shutdown_and_exit()
+
+                self._guard_all_unsaved(_go)
+            elif choice == "skip-version":
+                skip_version(self._update_state_path(), latest)
+                self.notify(f"Skipped {latest}. You'll be asked again when a newer version is out.")
+
+        self.push_screen(UpdateModal(latest, __version__, how), _chosen)
 
     def action_request_quit(self) -> None:
         if not self._on_main_screen():

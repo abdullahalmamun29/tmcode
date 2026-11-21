@@ -56,6 +56,9 @@ def build() -> Path:
         "--collect-data", "termcode",
         "--collect-submodules", "termcode",
         "--collect-submodules", "rich",
+        # Pygments loads its ~500 language lexers by name: bundle them all.
+        "--collect-submodules", "pygments.lexers",
+        "--collect-submodules", "pygments.styles",
     ]
     for grammar in tree_sitter_grammars():
         args += ["--collect-all", grammar]

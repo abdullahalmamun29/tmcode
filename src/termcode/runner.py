@@ -38,6 +38,7 @@ class Language(str, Enum):
     PHP = "php"
     PERL = "perl"
     LUA = "lua"
+    OTHER = "other"  # any other language: recipe table, #! line, or user command
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,177 @@ _LANGUAGE_LABELS: dict[str, str] = {
 }
 
 
+# ---------- any other language ----------
+#
+# Each entry: label, then recipes tried in order. A recipe is
+# (compile command or None, run command). Placeholders: {src} source file,
+# {out} compiled program, {tmp} scratch folder, {dir} source folder,
+# {stem} file name without extension.
+Recipe = tuple[list[str] | None, list[str]]
+
+_EXTRA_RUNNERS: dict[str, tuple[str, list[Recipe]]] = {
+    ".kt": ("Kotlin", [(["kotlinc", "{src}", "-include-runtime", "-d", "{tmp}/app.jar"], ["java", "-jar", "{tmp}/app.jar"])]),
+    ".kts": ("Kotlin", [(None, ["kotlin", "{src}"]), (None, ["kotlinc", "-script", "{src}"])]),
+    ".swift": ("Swift", [(None, ["swift", "{src}"])]),
+    ".dart": ("Dart", [(None, ["dart", "run", "{src}"])]),
+    ".cs": ("C#", [(None, ["dotnet", "run", "{src}"]), (None, ["dotnet-script", "{src}"])]),
+    ".fsx": ("F#", [(None, ["dotnet", "fsi", "{src}"])]),
+    ".hs": ("Haskell", [(None, ["runghc", "{src}"]), (None, ["runhaskell", "{src}"])]),
+    ".ex": ("Elixir", [(None, ["elixir", "{src}"])]),
+    ".exs": ("Elixir", [(None, ["elixir", "{src}"])]),
+    ".erl": ("Erlang", [(None, ["escript", "{src}"])]),
+    ".r": ("R", [(None, ["Rscript", "{src}"])]),
+    ".jl": ("Julia", [(None, ["julia", "{src}"])]),
+    ".scala": ("Scala", [(None, ["scala-cli", "run", "{src}"]), (None, ["scala", "{src}"])]),
+    ".sc": ("Scala", [(None, ["scala-cli", "run", "{src}"]), (None, ["scala", "{src}"])]),
+    ".zig": ("Zig", [(None, ["zig", "run", "{src}"])]),
+    ".nim": ("Nim", [(None, ["nim", "r", "--hints:off", "{src}"])]),
+    ".cr": ("Crystal", [(None, ["crystal", "run", "{src}"])]),
+    ".d": ("D", [(None, ["rdmd", "{src}"]), (None, ["dmd", "-run", "{src}"])]),
+    ".f90": ("Fortran", [(["gfortran", "{src}", "-o", "{out}"], ["{out}"])]),
+    ".f95": ("Fortran", [(["gfortran", "{src}", "-o", "{out}"], ["{out}"])]),
+    ".f03": ("Fortran", [(["gfortran", "{src}", "-o", "{out}"], ["{out}"])]),
+    ".f": ("Fortran", [(["gfortran", "{src}", "-o", "{out}"], ["{out}"])]),
+    ".pas": ("Pascal", [(["fpc", "-FE{tmp}", "-o{out}", "{src}"], ["{out}"])]),
+    ".pp": ("Pascal", [(["fpc", "-FE{tmp}", "-o{out}", "{src}"], ["{out}"])]),
+    ".adb": ("Ada", [(["gnatmake", "-q", "-D", "{tmp}", "-o", "{out}", "{src}"], ["{out}"])]),
+    ".cob": ("COBOL", [(["cobc", "-x", "-o", "{out}", "{src}"], ["{out}"])]),
+    ".cbl": ("COBOL", [(["cobc", "-x", "-o", "{out}", "{src}"], ["{out}"])]),
+    ".ml": ("OCaml", [(None, ["ocaml", "{src}"])]),
+    ".clj": ("Clojure", [(None, ["clojure", "-M", "{src}"]), (None, ["clj", "-M", "{src}"])]),
+    ".groovy": ("Groovy", [(None, ["groovy", "{src}"])]),
+    ".ps1": ("PowerShell", [
+        (None, ["pwsh", "-NoProfile", "-File", "{src}"]),
+        (None, ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{src}"]),
+    ]),
+    ".bat": ("Batch", [(None, ["cmd", "/c", "{src}"])]),
+    ".cmd": ("Batch", [(None, ["cmd", "/c", "{src}"])]),
+    ".zsh": ("Zsh", [(None, ["zsh", "{src}"])]),
+    ".fish": ("Fish", [(None, ["fish", "{src}"])]),
+    ".tcl": ("Tcl", [(None, ["tclsh", "{src}"])]),
+    ".rkt": ("Racket", [(None, ["racket", "{src}"])]),
+    ".scm": ("Scheme", [(None, ["guile", "--no-auto-compile", "{src}"]), (None, ["chez", "--script", "{src}"])]),
+    ".lisp": ("Common Lisp", [(None, ["sbcl", "--script", "{src}"])]),
+    ".raku": ("Raku", [(None, ["raku", "{src}"])]),
+    ".awk": ("AWK", [(None, ["awk", "-f", "{src}"])]),
+    ".m": ("Octave", [(None, ["octave", "--no-gui", "--quiet", "{src}"])]),
+    ".coffee": ("CoffeeScript", [(None, ["coffee", "{src}"])]),
+    ".mojo": ("Mojo", [(None, ["mojo", "run", "{src}"])]),
+    ".odin": ("Odin", [(None, ["odin", "run", "{src}", "-file"])]),
+    ".vala": ("Vala", [(None, ["vala", "{src}"])]),
+    ".sql": ("SQL (SQLite)", [(None, ["sqlite3", ":memory:", ".read '{src}'"])]),
+}
+
+
+def default_run_commands_path() -> Path:
+    from termcode.workspace import default_recent_store
+
+    return default_recent_store().parent / "run-commands.json"
+
+
+def load_user_run_commands(path: Path | None = None) -> dict[str, object]:
+    """Your own run commands, e.g. {".foo": "foo-run {file}"} or
+    {".bar": {"compile": "barc {file} -o {out}", "run": "{out}"}}."""
+    import json
+
+    target = path or default_run_commands_path()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k).lower() if str(k).startswith(".") else "." + str(k).lower(): v for k, v in data.items()}
+
+
+def _fill(template: list[str], values: dict[str, str]) -> list[str]:
+    out: list[str] = []
+    for token in template:
+        try:
+            out.append(token.format(**values))
+        except (KeyError, IndexError, ValueError):
+            out.append(token)
+    return out
+
+
+def _plan_from_recipe(
+    label: str, recipe: Recipe, source: Path, values: dict[str, str], which: Callable[[str], str | None]
+) -> RunPlan | None:
+    compile_tpl, run_tpl = recipe
+    compile_cmd = _fill(compile_tpl, values) if compile_tpl else None
+    run_cmd = _fill(run_tpl, values)
+    # Resolve the tools that must be installed (the compiled program itself doesn't count).
+    for cmd in (compile_cmd, run_cmd):
+        if cmd is None or cmd[0] == values["out"]:
+            continue
+        exe = which(cmd[0])
+        if not exe:
+            return None
+        cmd[0] = exe
+    shown = [Path(c[0]).name if i == 0 else c for i, c in enumerate(run_cmd)]
+    display = " ".join(shown).replace(str(source), source.name)
+    if compile_cmd:
+        compile_shown = " ".join([Path(compile_cmd[0]).name, *compile_cmd[1:]]).replace(str(source), source.name)
+        display = f"{compile_shown} && {display}"
+    return RunPlan(
+        language=Language.OTHER,
+        source=source,
+        compile_cmd=compile_cmd,
+        run_cmd=run_cmd,
+        cwd=source.parent,
+        display_cmd=display,
+    )
+
+
+def _user_recipe(entry: object, platform: str) -> Recipe | None:
+    import shlex
+
+    def split(text: object) -> list[str] | None:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        parts = shlex.split(text, posix=platform != "win32")
+        # Users write {file}; recipes use {src}.
+        return [p.replace("{file}", "{src}") for p in parts]
+
+    if isinstance(entry, str):
+        run = split(entry)
+        return (None, run) if run else None
+    if isinstance(entry, dict):
+        run = split(entry.get("run"))
+        if not run:
+            return None
+        return (split(entry.get("compile")), run)
+    return None
+
+
+def shebang_command(source: Path, which: Callable[[str], str | None]) -> list[str] | None:
+    """Command from a `#!` first line (e.g. #!/usr/bin/env ruby), or None."""
+    import shlex
+
+    try:
+        with source.open("r", encoding="utf-8", errors="replace") as fh:
+            first = fh.readline().strip()
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    try:
+        tokens = shlex.split(first[2:].strip())
+    except ValueError:
+        return None
+    if tokens and Path(tokens[0]).name == "env":
+        tokens = tokens[1:]
+        if tokens and tokens[0] == "-S":
+            tokens = tokens[1:]
+    if not tokens:
+        return None
+    tool = tokens[0]
+    exe = tool if Path(tool).is_absolute() and Path(tool).exists() else which(Path(tool).name)
+    if not exe:
+        return None
+    return [exe, *tokens[1:], str(source)]
+
+
 def detect_language(path: Path) -> Language | None:
     """Return the runnable Language for path, or None if unsupported."""
     return _RUNNABLE_EXTENSIONS.get(path.suffix.lower())
@@ -171,7 +343,13 @@ def language_label_for_path(path: Path | None) -> str:
     """Return a short human-readable language badge for the status bar."""
     if path is None:
         return "Untitled"
-    return _LANGUAGE_LABELS.get(path.suffix.lower(), "Text")
+    label = _LANGUAGE_LABELS.get(path.suffix.lower())
+    if label:
+        return label
+    from termcode.highlighting import pygments_lexer_for
+
+    lexer = pygments_lexer_for(path.name)
+    return lexer.name if lexer is not None else "Text"
 
 
 def _venv_python(venv_dir: Path, platform: str) -> Path:
@@ -233,15 +411,60 @@ def build_run_plan(
     platform: str | None = None,
     env: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] = shutil.which,
+    user_commands: dict[str, object] | Path | None = None,
 ) -> RunPlan:
-    """Build compile and execute commands for a Python, C, or C++ file."""
+    """Build compile and run commands for a file in any supported language.
+
+    Order: your run-commands.json, the built-in languages, the recipe table,
+    then the file's #! line.
+    """
     plat = platform or sys.platform
+    ext = source.suffix.lower()
+    binary_out = temp_dir / ("app.exe" if plat == "win32" else "app")
+    values = {
+        "src": str(source),
+        "out": str(binary_out),
+        "tmp": str(temp_dir),
+        "dir": str(source.parent),
+        "stem": source.stem,
+        "name": source.name,
+    }
+
+    commands = load_user_run_commands(user_commands) if not isinstance(user_commands, dict) else user_commands
+    if ext and ext in commands:
+        recipe = _user_recipe(commands[ext], plat)
+        if recipe is None:
+            raise RunnerError(f"Your run command for {ext} files is empty or malformed.")
+        plan = _plan_from_recipe(ext, recipe, source, values, which)
+        if plan is None:
+            tool = (recipe[0] or recipe[1])[0]
+            raise RunnerError(f"Could not find '{tool}' on PATH (from your run command for {ext} files).")
+        return plan
+
     lang = detect_language(source)
     if lang is None:
-        ext = source.suffix or "(no extension)"
-        supported = ", ".join(sorted(_RUNNABLE_EXTENSIONS))
+        if ext in _EXTRA_RUNNERS:
+            label, recipes = _EXTRA_RUNNERS[ext]
+            for recipe in recipes:
+                plan = _plan_from_recipe(label, recipe, source, values, which)
+                if plan is not None:
+                    return plan
+            tools = " or ".join(f"'{(r[0] or r[1])[0]}'" for r in recipes)
+            raise RunnerError(f"Could not find {tools} on PATH. Install {label} to run {ext} files.")
+        shebang = shebang_command(source, which)
+        if shebang is not None:
+            return RunPlan(
+                language=Language.OTHER,
+                source=source,
+                compile_cmd=None,
+                run_cmd=shebang,
+                cwd=source.parent,
+                display_cmd=f"{Path(shebang[0]).name} {' '.join(shebang[1:-1])} {source.name}".replace("  ", " "),
+            )
+        shown = ext or "(no extension)"
         raise RunnerError(
-            f"Unsupported file type for running: {ext}. Supported: {supported}"
+            f"TmCode doesn't know how to run {shown} files yet. Add a #! line at the top, "
+            f"or add a command to {default_run_commands_path()}"
         )
 
     cwd = source.parent

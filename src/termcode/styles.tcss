@@ -663,6 +663,7 @@ TextInputModal,
 FilePickerModal,
 FolderPickerModal,
 ConfirmModal,
+UpdateModal,
 UnsavedChangesModal {
     align: center top;
     padding-top: 4;

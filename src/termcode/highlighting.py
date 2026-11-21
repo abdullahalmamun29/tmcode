@@ -59,3 +59,110 @@ def register_extra_languages(text_area: TextArea) -> None:
             text_area.register_language("cpp", _CPP_LANG, _CPP_QUERY)
         except Exception:
             pass
+
+
+# ---------- Pygments fallback: colors for ~500 more languages ----------
+#
+# Tree-sitter grammars cover the common languages. For everything else
+# (Kotlin, Swift, Haskell, Elixir, Zig, Dockerfile, ...) the editor asks
+# Pygments, which ships with TmCode already, and maps its tokens to the
+# same theme colors.
+
+_MAX_FALLBACK_CHARS = 400_000  # very large files stay plain for speed
+
+
+def pygments_lexer_for(name: str, text: str = ""):  # type: ignore[no-untyped-def]
+    """A Pygments lexer for this filename (or a #! line), or None for plain text."""
+    try:
+        from pygments.lexers import get_lexer_for_filename, guess_lexer
+        from pygments.util import ClassNotFound
+    except ImportError:
+        return None
+    head = text[:2048]
+    options = {"stripnl": False, "stripall": False, "ensurenl": False}
+    lexer = None
+    try:
+        lexer = get_lexer_for_filename(name, head, **options)
+    except ClassNotFound:
+        if head.startswith("#!"):
+            try:
+                lexer = guess_lexer(head, **options)
+            except ClassNotFound:
+                lexer = None
+    except Exception:
+        lexer = None
+    if lexer is None or lexer.name in ("Text only", "Text output"):
+        return None
+    return lexer
+
+
+def _token_map():  # type: ignore[no-untyped-def]
+    from pygments.token import (
+        Comment, Generic, Keyword, Literal, Name, Number, Operator, String,
+    )
+
+    return [
+        (Comment, "comment"),
+        (String.Doc, "string.documentation"),
+        (String, "string"),
+        (Number, "number"),
+        (Keyword.Constant, "constant.builtin"),
+        (Keyword.Type, "type.builtin"),
+        (Keyword, "keyword"),
+        (Operator.Word, "keyword.operator"),
+        (Operator, "operator"),
+        (Name.Builtin.Pseudo, "constant.builtin"),
+        (Name.Builtin, "function.call"),
+        (Name.Function, "function"),
+        (Name.Decorator, "function"),
+        (Name.Class, "class"),
+        (Name.Namespace, "type"),
+        (Name.Exception, "type"),
+        (Name.Constant, "constant.builtin"),
+        (Name.Tag, "tag"),
+        (Name.Attribute, "css.property"),
+        (Name.Label, "json.label"),
+        (Generic.Heading, "heading"),
+        (Generic.Subheading, "heading"),
+        (Generic.Strong, "bold"),
+        (Generic.Emph, "italic"),
+        (Generic.Inserted, "string"),
+        (Generic.Deleted, "number"),
+        (Literal, "string"),
+    ]
+
+
+_NAME_CACHE: dict[object, str | None] = {}
+
+
+def _highlight_name(token_type) -> str | None:  # type: ignore[no-untyped-def]
+    if token_type in _NAME_CACHE:
+        return _NAME_CACHE[token_type]
+    name = None
+    for parent, highlight in _token_map():
+        if token_type in parent:
+            name = highlight
+            break
+    _NAME_CACHE[token_type] = name
+    return name
+
+
+def pygments_highlights(text: str, lexer) -> dict[int, list[tuple[int, int, str]]]:  # type: ignore[no-untyped-def]
+    """Per-line (start_byte, end_byte, highlight_name) ranges, like TextArea's tree-sitter map."""
+    result: dict[int, list[tuple[int, int, str]]] = {}
+    if len(text) > _MAX_FALLBACK_CHARS:
+        return result
+    row = 0
+    col = 0  # byte column within the current line
+    for _index, token_type, value in lexer.get_tokens_unprocessed(text):
+        name = _highlight_name(token_type)
+        parts = value.split("\n")
+        for i, part in enumerate(parts):
+            if i:
+                row += 1
+                col = 0
+            size = len(part.encode("utf-8"))
+            if name and size:
+                result.setdefault(row, []).append((col, col + size, name))
+            col += size
+    return result

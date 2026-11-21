@@ -266,6 +266,46 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class UpdateModal(ModalScreen[str]):
+    """'A new version is available' prompt: update / skip / skip until next version."""
+
+    BINDINGS = [
+        Binding("escape", "skip", "Skip", show=False),
+    ]
+
+    def __init__(self, latest: str, current: str, how: str) -> None:
+        super().__init__()
+        self._latest = latest
+        self._current = current
+        self._how = how
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="update-dialog", classes="modal-box"):
+            yield Label(f"TmCode {self._latest} is available", classes="modal-title")
+            yield Label(
+                f"You have {self._current}. {self._how}",
+                classes="modal-subtitle",
+            )
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Update now", variant="primary", id="update-now-btn")
+                yield Button("Skip", id="update-skip-btn")
+                yield Button("Skip until next version", id="update-skip-version-btn")
+
+    def on_mount(self) -> None:
+        self.query_one("#update-now-btn", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(
+            {
+                "update-now-btn": "update",
+                "update-skip-version-btn": "skip-version",
+            }.get(event.button.id or "", "skip")
+        )
+
+    def action_skip(self) -> None:
+        self.dismiss("skip")
+
+
 class UnsavedChangesModal(ModalScreen[str]):
     """Three-way confirmation when leaving a buffer with unsaved changes."""
 

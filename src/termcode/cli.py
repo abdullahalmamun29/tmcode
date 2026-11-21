@@ -8,6 +8,7 @@ import sys
 
 from termcode import __version__
 from termcode.app import TermCodeApp
+from termcode.update import detect_install, run_update
 
 
 def _is_home(path: Path) -> bool:
@@ -45,7 +46,7 @@ def parse_cli_target(arg: str | None, cwd: Path | None = None) -> tuple[Path | N
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tmcode",
-        description="Lightweight VS Code-style terminal editor and runner for Python, C, and C++.",
+        description="TmCode: a lightweight terminal code editor. Edit and run code in any language.",
     )
     parser.add_argument(
         "path",
@@ -54,14 +55,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional folder or file to open (from home directory, opens the Home folder selector; from any other folder, opens it directly).",
     )
     parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Update TmCode to the latest version and exit.",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
     )
     args = parser.parse_args(argv)
+    if args.update:
+        return run_update(detect_install())
     workspace_root, initial_file = parse_cli_target(args.path)
     app = TermCodeApp(workspace_root=workspace_root, initial_file=initial_file)
     app.run()
+    if app.update_to:
+        return run_update(app.install_kind, app.update_to)
     return 0
 
 

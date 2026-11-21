@@ -1,15 +1,16 @@
 # TmCode
 
-Lightweight, cross-platform VS Code-style terminal code editor and runner for **Python**, **C**, and **C++**.
+Lightweight, cross-platform VS Code-style terminal code editor for **any language**: open, highlight and run code right in your terminal.
 
 ## Features
 
 - Launch right from any terminal (`tmcode` from `~` opens the Home folder picker; `tmcode` inside any project folder opens it directly)
 - VS Code Dark Modern 3-pane layout: Explorer with `+F`/`+D` buttons, multi-tab + side-by-side split editor (`F12`), and draggable/resizable Terminal panel
-- VS Code Dark+ syntax colors across **17 languages** (Python, C, C++, JS/TS, HTML, CSS, JSON, Java, Go, Rust, Bash, SQL, Markdown, YAML, TOML, XML, Regex)
+- Syntax colors for **hundreds of languages**: precise tree-sitter highlighting for Python, C, C++, JS/TS, HTML, CSS, JSON, Java, Go, Rust, Bash, SQL, Markdown, YAML, TOML, XML and Regex, plus Pygments for everything else (Kotlin, Swift, C#, Haskell, Elixir, Zig, Dart, R, Julia, Dockerfile, ...)
 - Lightweight offline code suggestions (language builtins + open-file words) and automatic indentation while typing
 - Auto-closing brackets and quotes like VS Code: `(` `[` `{` `"` `'` insert their partner, typing the closer steps over it, Backspace removes an empty pair, Enter inside `{}` opens an indented block, and typing a bracket with text selected wraps it
-- Unified `/run` (`F5`) supporting **Python, C, C++, JavaScript, TypeScript, Bash, Go, Rust, Java, Ruby, PHP, Perl, and Lua** with live interactive keyboard input
+- Run any language with `F5` (live keyboard input) or `Shift+F5` (full terminal): Python, C, C++, JavaScript, TypeScript, Bash, Go, Rust, Java, Ruby, PHP, Perl, Lua, Kotlin, Swift, Dart, C#, F#, Haskell, Elixir, Erlang, R, Julia, Scala, Zig, Nim, Crystal, D, Fortran, Pascal, Ada, COBOL, OCaml, Clojure, Groovy, PowerShell, Zsh, Fish, Tcl, Racket, Scheme, Common Lisp, Raku, AWK, Octave, CoffeeScript, Mojo, Odin, Vala and SQL (SQLite). Any script with a `#!` line runs too, and you can add your own commands (see [Run any language](#run-any-language))
+- Update prompt on start, like Codex: **Update now**, **Skip**, or **Skip until next version** (checks at most once a day; turn off with `TMCODE_NO_UPDATE_CHECK=1`). `tmcode --update` updates any time
 - Real OS clipboard integration (Linux X11/Wayland, macOS, Windows), `Ctrl+A` select-all, and VS Code-style `Ctrl+C` (copies selection or current line)
 - Searchable `/` command menu (`Ctrl+K` anywhere, or `/` outside text inputs) with a shortcut for every action
 
@@ -61,6 +62,25 @@ Bump `version` in `pyproject.toml`, commit, then push a tag:
 git tag v0.2.1 && git push origin v0.2.1
 ```
 GitHub Actions runs the tests, builds TmCode for Linux, macOS (Intel + Apple Silicon) and Windows, and publishes a Release with checksums. See `.github/workflows/release.yml` to also publish to PyPI automatically.
+
+## Run any language
+
+`F5` picks the right command from the file extension. You need that language installed (for example `kotlinc` for `.kt`); if it's missing, TmCode tells you what to install.
+
+For anything else:
+
+- **`#!` line:** a first line like `#!/usr/bin/env ruby` tells TmCode how to run the file, even with no extension.
+- **Your own commands:** create `run-commands.json` in TmCode's settings folder (`~/.config/termcode/` on Linux, `~/Library/Application Support/termcode/` on macOS, `%LOCALAPPDATA%\termcode\termcode\` on Windows). Your commands also override the built-in ones:
+
+```json
+{
+  ".foo": "foo-run {file}",
+  ".py": "python3 -X dev {file}",
+  ".bar": { "compile": "barc {file} -o {out}", "run": "{out}" }
+}
+```
+
+Placeholders: `{file}` the file, `{out}` a temporary program path for compiled languages, `{dir}` the file's folder, `{stem}` the file name without extension.
 
 ## Usage
 
