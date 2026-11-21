@@ -27,3 +27,17 @@ def test_highlights_use_byte_columns_and_rows() -> None:
     comments = [line1[s:e].decode() for s, e, n in row1 if n == "comment"]
     assert "".join(strings) == '"héllo"'
     assert comments == ["// hi"]
+
+
+def test_web_templates_get_colors() -> None:
+    from pathlib import Path
+
+    from termcode.runner import editor_language_for_path
+
+    assert editor_language_for_path(Path("App.svelte")) == "html"
+    assert editor_language_for_path(Path("index.astro")) == "html"
+    ejs = pygments_lexer_for("page.ejs")
+    njk = pygments_lexer_for("base.njk")
+    assert ejs is not None and njk is not None
+    hl = pygments_highlights("<p><%= user.name %></p>\n", ejs)
+    assert {"tag"} <= {n for *_r, n in hl[0]}

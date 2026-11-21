@@ -71,6 +71,17 @@ def register_extra_languages(text_area: TextArea) -> None:
 _MAX_FALLBACK_CHARS = 400_000  # very large files stay plain for speed
 
 
+# Template languages Pygments knows under another name.
+_LEXER_ALIASES = {
+    ".ejs": "html+erb",       # <% %> tags, same syntax as ERB
+    ".njk": "html+jinja",     # Nunjucks is Jinja-compatible
+    ".nunjucks": "html+jinja",
+    ".jinja": "html+jinja",
+    ".jinja2": "html+jinja",
+    ".j2": "html+jinja",
+}
+
+
 def pygments_lexer_for(name: str, text: str = ""):  # type: ignore[no-untyped-def]
     """A Pygments lexer for this filename (or a #! line), or None for plain text."""
     try:
@@ -81,6 +92,14 @@ def pygments_lexer_for(name: str, text: str = ""):  # type: ignore[no-untyped-de
     head = text[:2048]
     options = {"stripnl": False, "stripall": False, "ensurenl": False}
     lexer = None
+    alias = _LEXER_ALIASES.get("." + name.rsplit(".", 1)[-1].lower()) if "." in name else None
+    if alias:
+        try:
+            from pygments.lexers import get_lexer_by_name
+
+            return get_lexer_by_name(alias, **options)
+        except Exception:
+            pass
     try:
         lexer = get_lexer_for_filename(name, head, **options)
     except ClassNotFound:

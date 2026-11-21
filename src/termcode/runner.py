@@ -102,6 +102,8 @@ _EDITOR_LANGUAGES: dict[str, str] = {
     ".html": "html",
     ".htm": "html",
     ".css": "css",
+    ".svelte": "html",
+    ".astro": "html",
     ".json": "json",
     ".java": "java",
     ".go": "go",
@@ -133,6 +135,10 @@ _LANGUAGE_LABELS: dict[str, str] = {
     ".cjs": "JavaScript",
     ".ts": "TypeScript",
     ".tsx": "TypeScript",
+    ".svelte": "Svelte",
+    ".astro": "Astro",
+    ".ejs": "EJS",
+    ".njk": "Nunjucks",
     ".html": "HTML",
     ".htm": "HTML",
     ".css": "CSS",
@@ -211,6 +217,8 @@ _EXTRA_RUNNERS: dict[str, tuple[str, list[Recipe]]] = {
     ".awk": ("AWK", [(None, ["awk", "-f", "{src}"])]),
     ".m": ("Octave", [(None, ["octave", "--no-gui", "--quiet", "{src}"])]),
     ".coffee": ("CoffeeScript", [(None, ["coffee", "{src}"])]),
+    ".jsx": ("JSX", [(None, ["tsx", "{src}"]), (None, ["bun", "{src}"]), (None, ["deno", "run", "{src}"])]),
+    ".tsx": ("TSX", [(None, ["tsx", "{src}"]), (None, ["bun", "{src}"]), (None, ["deno", "run", "{src}"])]),
     ".mojo": ("Mojo", [(None, ["mojo", "run", "{src}"])]),
     ".odin": ("Odin", [(None, ["odin", "run", "{src}", "-file"])]),
     ".vala": ("Vala", [(None, ["vala", "{src}"])]),
@@ -297,6 +305,50 @@ def _user_recipe(entry: object, platform: str) -> Recipe | None:
             return None
         return (split(entry.get("compile")), run)
     return None
+
+
+_PAGE_EXTENSIONS = {".html", ".htm", ".xhtml", ".svg"}
+_STYLE_EXTENSIONS = {".css", ".scss", ".sass", ".less"}
+
+
+def _page_for(source: Path) -> Path | None:
+    """The page F5 should open: the file itself, or for a stylesheet the HTML next to it."""
+    ext = source.suffix.lower()
+    if ext in _PAGE_EXTENSIONS:
+        return source
+    if ext in _STYLE_EXTENSIONS:
+        pages = sorted(p for p in source.parent.glob("*.htm*") if p.is_file())
+        for preferred in ("index.html", "index.htm"):
+            for page in pages:
+                if page.name.lower() == preferred:
+                    return page
+        if pages:
+            return pages[0]
+        raise RunnerError(f"No HTML page next to {source.name} to open in the browser.")
+    return None
+
+
+def _browser_plan(page: Path, source: Path, platform: str, which: Callable[[str], str | None]) -> RunPlan:
+    if platform == "win32":
+        cmd = ["cmd", "/c", "start", '""', str(page)]
+    else:
+        candidates = [["open"]] if platform == "darwin" else [["xdg-open"], ["gio", "open"], ["sensible-browser"]]
+        cmd = []
+        for candidate in candidates:
+            exe = which(candidate[0])
+            if exe:
+                cmd = [exe, *candidate[1:], str(page)]
+                break
+        if not cmd:
+            raise RunnerError("Could not find a way to open the browser (xdg-open). Open the file manually.")
+    return RunPlan(
+        language=Language.OTHER,
+        source=source,
+        compile_cmd=None,
+        run_cmd=cmd,
+        cwd=page.parent,
+        display_cmd=f"open {page.name} in your browser",
+    )
 
 
 def shebang_command(source: Path, which: Callable[[str], str | None]) -> list[str] | None:
@@ -440,6 +492,10 @@ def build_run_plan(
             tool = (recipe[0] or recipe[1])[0]
             raise RunnerError(f"Could not find '{tool}' on PATH (from your run command for {ext} files).")
         return plan
+
+    page = _page_for(source)
+    if page is not None:
+        return _browser_plan(page, source, plat, which)
 
     lang = detect_language(source)
     if lang is None:

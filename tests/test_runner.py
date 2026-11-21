@@ -352,3 +352,37 @@ def test_user_run_commands_override_and_extend(tmp_path: Path) -> None:
     plan = build_run_plan(bar, tmp_path, t, which=_which_all, user_commands=cfg, platform="linux")
     assert plan.compile_cmd == ["/usr/bin/barc", str(bar), "-o", str(t / "app")]
     assert plan.run_cmd == [str(t / "app")]
+
+
+def test_html_opens_in_browser(tmp_path: Path) -> None:
+    page = tmp_path / "index.html"
+    page.write_text("<h1>hi</h1>", encoding="utf-8")
+    linux = build_run_plan(page, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
+    assert linux.run_cmd == ["/usr/bin/xdg-open", str(page)]
+    assert "browser" in linux.display_cmd
+    mac = build_run_plan(page, tmp_path, tmp_path / "t", platform="darwin", which=_which_all, user_commands={})
+    assert mac.run_cmd == ["/usr/bin/open", str(page)]
+    win = build_run_plan(page, tmp_path, tmp_path / "t", platform="win32", which=_which_all, user_commands={})
+    assert win.run_cmd[:4] == ["cmd", "/c", "start", '""'] and win.run_cmd[-1] == str(page)
+
+
+def test_css_opens_the_page_next_to_it(tmp_path: Path) -> None:
+    css = tmp_path / "style.css"
+    css.write_text("h1{}", encoding="utf-8")
+    with pytest.raises(RunnerError, match="No HTML page"):
+        build_run_plan(css, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
+    (tmp_path / "about.html").write_text("", encoding="utf-8")
+    (tmp_path / "index.html").write_text("", encoding="utf-8")
+    plan = build_run_plan(css, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
+    assert plan.run_cmd[-1] == str(tmp_path / "index.html")  # index.html wins
+
+
+def test_jsx_and_tsx_run_with_tsx_or_fallbacks(tmp_path: Path) -> None:
+    for name in ("App.jsx", "App.tsx"):
+        src = tmp_path / name
+        src.write_text("", encoding="utf-8")
+        plan = build_run_plan(src, tmp_path, tmp_path / "t", which=_which_all, user_commands={})
+        assert plan.run_cmd == ["/usr/bin/tsx", str(src)]
+        bun = build_run_plan(src, tmp_path, tmp_path / "t",
+                             which=lambda n: "/usr/bin/bun" if n == "bun" else None, user_commands={})
+        assert bun.run_cmd == ["/usr/bin/bun", str(src)]
