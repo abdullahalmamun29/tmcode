@@ -69,6 +69,8 @@ _RUNNABLE_EXTENSIONS: dict[str, Language] = {
     ".cpp": Language.CPP,
     ".cc": Language.CPP,
     ".cxx": Language.CPP,
+    ".c++": Language.CPP,
+    ".cp": Language.CPP,
     ".js": Language.JAVASCRIPT,
     ".mjs": Language.JAVASCRIPT,
     ".cjs": Language.JAVASCRIPT,
@@ -91,8 +93,12 @@ _EDITOR_LANGUAGES: dict[str, str] = {
     ".cpp": "cpp",
     ".cc": "cpp",
     ".cxx": "cpp",
+    ".c++": "cpp",
+    ".cp": "cpp",
     ".hpp": "cpp",
     ".hh": "cpp",
+    ".hxx": "cpp",
+    ".h++": "cpp",
     ".js": "javascript",
     ".jsx": "javascript",
     ".mjs": "javascript",
@@ -127,8 +133,18 @@ _LANGUAGE_LABELS: dict[str, str] = {
     ".cpp": "C++",
     ".cc": "C++",
     ".cxx": "C++",
+    ".c++": "C++",
+    ".cp": "C++",
+    ".tex": "LaTeX",
+    ".ltx": "LaTeX",
+    ".latex": "LaTeX",
+    ".bib": "BibTeX",
+    ".sty": "LaTeX",
+    ".cls": "LaTeX",
     ".hpp": "C++",
     ".hh": "C++",
+    ".hxx": "C++",
+    ".h++": "C++",
     ".js": "JavaScript",
     ".jsx": "JavaScript",
     ".mjs": "JavaScript",
@@ -328,26 +344,132 @@ def _page_for(source: Path) -> Path | None:
     return None
 
 
-def _browser_plan(page: Path, source: Path, platform: str, which: Callable[[str], str | None]) -> RunPlan:
+def _opener_cmd(target: Path, platform: str, which: Callable[[str], str | None], what: str) -> list[str]:
+    """Command that opens a file in the system's default app (browser, PDF viewer)."""
     if platform == "win32":
-        cmd = ["cmd", "/c", "start", '""', str(page)]
-    else:
-        candidates = [["open"]] if platform == "darwin" else [["xdg-open"], ["gio", "open"], ["sensible-browser"]]
-        cmd = []
-        for candidate in candidates:
-            exe = which(candidate[0])
-            if exe:
-                cmd = [exe, *candidate[1:], str(page)]
-                break
-        if not cmd:
-            raise RunnerError("Could not find a way to open the browser (xdg-open). Open the file manually.")
+        return ["cmd", "/c", "start", '""', str(target)]
+    candidates = [["open"]] if platform == "darwin" else [["xdg-open"], ["gio", "open"], ["sensible-browser"]]
+    for candidate in candidates:
+        exe = which(candidate[0])
+        if exe:
+            return [exe, *candidate[1:], str(target)]
+    raise RunnerError(f"Could not find a way to open the {what} (xdg-open). Open {target.name} manually.")
+
+
+def _browser_plan(page: Path, source: Path, platform: str, which: Callable[[str], str | None]) -> RunPlan:
     return RunPlan(
         language=Language.OTHER,
         source=source,
         compile_cmd=None,
-        run_cmd=cmd,
+        run_cmd=_opener_cmd(page, platform, which, "browser"),
         cwd=page.parent,
         display_cmd=f"open {page.name} in your browser",
+    )
+
+
+# ---------- LaTeX: build the PDF, then open it ----------
+
+_LATEX_EXTENSIONS = {".tex", ".ltx", ".latex"}
+_TEX_ENGINES = ("pdflatex", "xelatex", "lualatex")
+
+
+def _read_head(path: Path, limit: int = 200_000) -> str:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(limit)
+    except OSError:
+        return ""
+
+
+def _is_main_document(path: Path) -> bool:
+    return "\\documentclass" in _read_head(path)
+
+
+def _latex_main_for(source: Path) -> Path:
+    """The document to build: the file itself, or for a chapter/section file
+    (no \\documentclass) the main .tex next to it, like F5 on CSS opens its page."""
+    if _is_main_document(source):
+        return source
+    head = _read_head(source, 4000)
+    # TeXstudio / VS Code LaTeX Workshop magic comment: % !TEX root = main.tex
+    for line in head.splitlines()[:20]:
+        stripped = line.strip().lstrip("%").strip()
+        lower = stripped.lower()
+        if lower.startswith("!tex root") and "=" in stripped:
+            root = (source.parent / stripped.split("=", 1)[1].strip()).resolve()
+            if root.is_file():
+                return root
+    folders = [source.parent, source.parent.parent] if source.parent.parent != source.parent else [source.parent]
+    for folder in folders:
+        mains = sorted(
+            p for p in folder.glob("*")
+            if p.is_file() and p.suffix.lower() in _LATEX_EXTENSIONS and p != source and _is_main_document(p)
+        )
+        for preferred in ("main.tex", "thesis.tex", "report.tex", "paper.tex"):
+            for main in mains:
+                if main.name.lower() == preferred:
+                    return main
+        if mains:
+            return mains[0]
+    raise RunnerError(
+        f"{source.name} has no \\documentclass, and there is no main .tex file next to it to build. "
+        "Open the main file and press F5 there."
+    )
+
+
+def latex_engine_for(text: str) -> str:
+    """pdflatex unless the document asks for XeLaTeX or LuaLaTeX.
+
+    Honors the `% !TEX program = xelatex` comment; otherwise fontspec,
+    polyglossia or system fonts (e.g. Bangla, Arabic, CJK) need XeLaTeX.
+    """
+    for line in text.splitlines()[:20]:
+        stripped = line.strip().lstrip("%").strip().lower().replace(" ", "")
+        if stripped.startswith("!texprogram="):
+            name = stripped.split("=", 1)[1]
+            for engine in _TEX_ENGINES:
+                if name.startswith(engine.removesuffix("latex")):
+                    return engine
+    if "luacode" in text or "\\directlua" in text:
+        return "lualatex"
+    for marker in ("{fontspec}", "{polyglossia}", "\\setmainfont", "{xeCJK}", "{unicode-math}", "{fontspec,", ",fontspec}"):
+        if marker in text:
+            return "xelatex"
+    return "pdflatex"
+
+
+def _latex_plan(source: Path, platform: str, which: Callable[[str], str | None]) -> RunPlan:
+    main = _latex_main_for(source)
+    engine = latex_engine_for(_read_head(main))
+    pdf = main.with_suffix(".pdf")
+    flags = ["-interaction=nonstopmode", "-halt-on-error", "-file-line-error"]
+
+    latexmk = which("latexmk")
+    engine_exe = which(engine)
+    tectonic = which("tectonic")
+    if latexmk and engine_exe:
+        # latexmk reruns LaTeX/BibTeX until references and the table of contents settle.
+        engine_flag = {"pdflatex": "-pdf", "xelatex": "-xelatex", "lualatex": "-lualatex"}[engine]
+        compile_cmd = [latexmk, engine_flag, *flags, main.name]
+        shown = f"latexmk {engine_flag} {main.name}"
+    elif engine_exe:
+        compile_cmd = [engine_exe, *flags, main.name]
+        shown = f"{engine} {main.name}"
+    elif tectonic:
+        compile_cmd = [tectonic, main.name]
+        shown = f"tectonic {main.name}"
+    else:
+        raise RunnerError(
+            f"Could not find '{engine}' on PATH. Install a TeX distribution "
+            "(TeX Live, MacTeX or MiKTeX) to build .tex files."
+        )
+    return RunPlan(
+        language=Language.OTHER,
+        source=source,
+        compile_cmd=compile_cmd,
+        run_cmd=_opener_cmd(pdf, platform, which, "PDF viewer"),
+        cwd=main.parent,
+        display_cmd=f"{shown} && open {pdf.name}",
     )
 
 
@@ -496,6 +618,9 @@ def build_run_plan(
     page = _page_for(source)
     if page is not None:
         return _browser_plan(page, source, plat, which)
+
+    if ext in _LATEX_EXTENSIONS:
+        return _latex_plan(source, plat, which)
 
     lang = detect_language(source)
     if lang is None:

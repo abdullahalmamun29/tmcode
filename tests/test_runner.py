@@ -23,6 +23,13 @@ def test_language_and_editor_detection() -> None:
     assert detect_language(Path("a.cc")) == Language.CPP
     assert detect_language(Path("a.cxx")) == Language.CPP
     assert detect_language(Path("a.txt")) is None
+    # Less common C++ spellings, e.g. hello.c++
+    for name in ("hello.c++", "hello.C++", "a.cp"):
+        assert detect_language(Path(name)) == Language.CPP
+        assert editor_language_for_path(Path(name)) == "cpp"
+        assert language_label_for_path(Path(name)) == "C++"
+    for name in ("a.hxx", "a.h++"):
+        assert editor_language_for_path(Path(name)) == "cpp"
     assert editor_language_for_path(Path("a.py")) == "python"
     assert editor_language_for_path(Path("a.h")) == "c"
     assert editor_language_for_path(Path("a.hpp")) == "cpp"
@@ -386,3 +393,63 @@ def test_jsx_and_tsx_run_with_tsx_or_fallbacks(tmp_path: Path) -> None:
         bun = build_run_plan(src, tmp_path, tmp_path / "t",
                              which=lambda n: "/usr/bin/bun" if n == "bun" else None, user_commands={})
         assert bun.run_cmd == ["/usr/bin/bun", str(src)]
+
+
+_DOC = "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n"
+
+
+def test_latex_builds_pdf_then_opens_it(tmp_path: Path) -> None:
+    tex = tmp_path / "paper.tex"
+    tex.write_text(_DOC, encoding="utf-8")
+    plan = build_run_plan(tex, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
+    assert plan.compile_cmd[:2] == ["/usr/bin/latexmk", "-pdf"]
+    assert "-interaction=nonstopmode" in plan.compile_cmd and plan.compile_cmd[-1] == "paper.tex"
+    assert plan.cwd == tmp_path
+    assert plan.run_cmd == ["/usr/bin/xdg-open", str(tmp_path / "paper.pdf")]
+    assert "paper.pdf" in plan.display_cmd
+    assert language_label_for_path(tex) == "LaTeX"
+
+
+def test_latex_without_latexmk_uses_the_engine_or_tectonic(tmp_path: Path) -> None:
+    tex = tmp_path / "a.tex"
+    tex.write_text(_DOC, encoding="utf-8")
+    only = lambda *names: (lambda n: f"/usr/bin/{n}" if n in names else None)  # noqa: E731
+    plan = build_run_plan(tex, tmp_path, tmp_path / "t", which=only("pdflatex", "xdg-open"), user_commands={})
+    assert plan.compile_cmd[0] == "/usr/bin/pdflatex"
+    plan = build_run_plan(tex, tmp_path, tmp_path / "t", which=only("tectonic", "xdg-open"), user_commands={})
+    assert plan.compile_cmd == ["/usr/bin/tectonic", "a.tex"]
+    with pytest.raises(RunnerError, match="TeX Live, MacTeX or MiKTeX"):
+        build_run_plan(tex, tmp_path, tmp_path / "t", which=only("xdg-open"), user_commands={})
+
+
+def test_latex_engine_choice() -> None:
+    from termcode.runner import latex_engine_for
+
+    assert latex_engine_for(_DOC) == "pdflatex"
+    assert latex_engine_for("\\usepackage{fontspec}\n\\setmainfont{Kalpurush}") == "xelatex"
+    assert latex_engine_for("\\usepackage{polyglossia}") == "xelatex"
+    assert latex_engine_for("% !TEX program = lualatex\n" + _DOC) == "lualatex"
+    assert latex_engine_for("% !TeX program = XeLaTeX\n" + _DOC) == "xelatex"
+
+
+def test_latex_chapter_file_builds_the_main_document(tmp_path: Path) -> None:
+    (tmp_path / "notes.tex").write_text(_DOC, encoding="utf-8")
+    (tmp_path / "main.tex").write_text(_DOC, encoding="utf-8")
+    chapters = tmp_path / "chapters"
+    chapters.mkdir()
+    intro = chapters / "intro.tex"
+    intro.write_text("\\section{Intro}\n", encoding="utf-8")
+    plan = build_run_plan(intro, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
+    assert plan.compile_cmd[-1] == "main.tex" and plan.cwd == tmp_path  # main.tex wins
+    # An explicit magic comment beats guessing.
+    intro.write_text("% !TEX root = ../notes.tex\n\\section{Intro}\n", encoding="utf-8")
+    plan = build_run_plan(intro, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
+    assert plan.compile_cmd[-1] == "notes.tex"
+    lonely = tmp_path / "t2"
+    lonely.mkdir()
+    part = lonely / "part.tex"
+    part.write_text("\\section{x}", encoding="utf-8")
+    (tmp_path / "main.tex").unlink()
+    (tmp_path / "notes.tex").unlink()
+    with pytest.raises(RunnerError, match="no main .tex"):
+        build_run_plan(part, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
