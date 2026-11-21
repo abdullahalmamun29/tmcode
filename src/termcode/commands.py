@@ -165,8 +165,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         command="/split-editor",
         action="toggle_split",
-        shortcut="F12",
-        binding="f12",
+        shortcut="Ctrl+\\",
+        binding="ctrl+backslash",
         description="Toggle side-by-side split editor",
     ),
     CommandSpec(
@@ -196,6 +196,41 @@ COMMANDS: tuple[CommandSpec, ...] = (
         shortcut="F6",
         binding="f6",
         description="Fix indentation in the current file now",
+    ),
+    CommandSpec(
+        command="/go-to-definition",
+        action="go_to_definition",
+        shortcut="F12",
+        binding="f12",
+        description="Jump to where the symbol under the cursor is defined (or Ctrl+click)",
+    ),
+    CommandSpec(
+        command="/go-back",
+        action="go_back",
+        shortcut="Alt+Left",
+        binding="alt+left",
+        description="Back to where you were before going to a definition",
+    ),
+    CommandSpec(
+        command="/info",
+        action="hover_info",
+        shortcut="F1",
+        binding="f1",
+        description="Show the type and docs of the symbol under the cursor",
+    ),
+    CommandSpec(
+        command="/problems",
+        action="show_problems",
+        shortcut="",
+        binding="",
+        description="List errors and warnings in this file and jump to one",
+    ),
+    CommandSpec(
+        command="/language-server",
+        action="lsp_info",
+        shortcut="",
+        binding="",
+        description="Which language server checks this file, or how to install one",
     ),
     CommandSpec(
         command="/clean-build",

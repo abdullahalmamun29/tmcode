@@ -592,8 +592,8 @@ async def test_sidebar_buttons_multi_tab_and_split_editor(tmp_path: Path) -> Non
         assert app.active_file == f1.resolve()
         assert editor.text == "a = 99\n"
 
-        # Toggle side-by-side split via F12 (/split-editor)
-        await pilot.press("f12")
+        # Toggle side-by-side split via Ctrl+\\ (/split-editor)
+        await pilot.press("ctrl+backslash")
         await pilot.pause()
         assert app.is_split is True
         assert app.query_one("#right-editor-col").display is True
@@ -607,8 +607,8 @@ async def test_sidebar_buttons_multi_tab_and_split_editor(tmp_path: Path) -> Non
         assert right_ed.text == "int main(){return 0;}\n"
         assert editor.text == "a = 99\n"
 
-        # Unsplit via F12 merges tabs back safely without losing unsaved edits
-        await pilot.press("f12")
+        # Unsplit via Ctrl+\\ merges tabs back safely without losing unsaved edits
+        await pilot.press("ctrl+backslash")
         await pilot.pause()
         assert app.is_split is False
         assert app.query_one("#right-editor-col").display is False
@@ -1009,3 +1009,66 @@ async def test_vscode_style_editing_shortcuts(tmp_path: Path) -> None:
         before = editor.soft_wrap
         await pilot.press("alt+z")
         assert editor.soft_wrap is (not before)
+
+
+async def _wait_for(pilot, condition, timeout: float = 10.0) -> None:  # type: ignore[no-untyped-def]
+    for _ in range(int(timeout / 0.05)):
+        if condition():
+            return
+        await pilot.pause(0.05)
+    raise AssertionError("timed out waiting")
+
+
+@pytest.mark.asyncio
+async def test_language_server_in_the_editor(tmp_path: Path) -> None:
+    import sys
+
+    from termcode.lsp import LspManager
+
+    src = tmp_path / "a.py"
+    src.write_text("def alpha():\n    pass\nvalue = BAD\n", encoding="utf-8")
+    fake = [sys.executable, str(Path(__file__).with_name("fake_lsp_server.py"))]
+    app = TermCodeApp(tmp_path, src, recent_store=tmp_path / "recent.json")
+    app.lsp_enabled = True
+    app.lsp = LspManager(app._on_lsp_diagnostics, config={".py": fake})
+    async with app.run_test(size=(120, 36)) as pilot:
+        editor = app.query_one("#editor", TextArea)
+        await _wait_for(pilot, lambda: bool(editor.diagnostics))
+
+        # The problem is underlined, counted, and explained on its line.
+        assert editor.diagnostics[0].start == (2, 8)
+        assert any(name == "diag.error" for *_, name in editor._highlights[2])
+        status_right = str(app.query_one("#status-right").render())
+        assert "✗ 1" in status_right and "fake_lsp_server" in status_right
+        editor.focus()
+        editor.move_cursor((2, 9))
+        await pilot.pause()
+        assert "BAD is not allowed" in str(app.query_one("#status-left").render())
+
+        # Fixing it clears the problem once the server answers.
+        editor.replace("2  ", (2, 8), (2, 11))
+        await _wait_for(pilot, lambda: not editor.diagnostics)
+        assert "✗" not in str(app.query_one("#status-right").render())
+
+        # Smart completion comes from the server; snippets are inserted as plain text.
+        editor.move_cursor((3, 0))
+        await pilot.press("a", "l", "p")
+        await _wait_for(pilot, lambda: "alpha_function" in app._completion_items)
+        assert app._completion_items[:2] == ["alpha_function", "alpine"]
+        await pilot.press("tab")
+        assert editor.document.get_line(3) == "alpha_function(x)"
+
+        # F1 shows hover info; moving the cursor hides it.
+        await pilot.press("f1")
+        hover = app.query_one("#hover-popup")
+        await _wait_for(pilot, lambda: hover.display)
+        assert "Does alpha." in str(hover.render())
+        await pilot.press("left")
+        assert not hover.display
+
+        # F12 goes to the definition, Alt+Left comes back.
+        editor.move_cursor((3, 3))
+        await pilot.press("f12")
+        await _wait_for(pilot, lambda: editor.cursor_location == (0, 4))
+        await pilot.press("alt+left")
+        assert editor.cursor_location == (3, 3)

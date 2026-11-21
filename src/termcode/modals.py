@@ -469,3 +469,34 @@ class FolderPickerModal(ModalScreen[Path | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class ProblemsModal(ModalScreen[str | None]):
+    """Problems the language server found in the current file; Enter jumps to one."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Close", show=False),
+    ]
+
+    def __init__(self, options: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self._options = options
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="problems-dialog", classes="modal-box"):
+            yield Label(f"Problems ({len(self._options)})", classes="modal-title")
+            yield OptionList(id="problems-list")
+
+    def on_mount(self) -> None:
+        option_list = self.query_one("#problems-list", OptionList)
+        for label, option_id in self._options:
+            option_list.add_option(Option(label, id=option_id))
+        if self._options:
+            option_list.highlighted = 0
+        option_list.focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option_id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

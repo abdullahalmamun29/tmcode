@@ -7,9 +7,10 @@ Lightweight, cross-platform VS Code-style terminal code editor for **any languag
 ## Features
 
 - Launch right from any terminal (`tmcode` from `~` opens the Home folder picker; `tmcode` inside any project folder opens it directly)
-- VS Code Dark Modern 3-pane layout: Explorer with `+F`/`+D` buttons, multi-tab + side-by-side split editor (`F12`), and draggable/resizable Terminal panel
+- VS Code Dark Modern 3-pane layout: Explorer with `+F`/`+D` buttons, multi-tab + side-by-side split editor (`Ctrl+\`), and draggable/resizable Terminal panel
 - Syntax colors for **hundreds of languages**: precise tree-sitter highlighting for Python, C, C++, JS/TS, HTML, CSS, JSON, Java, Go, Rust, Bash, SQL, Markdown, YAML, TOML, XML and Regex, plus Pygments for everything else (Kotlin, Swift, C#, Haskell, Elixir, Zig, Dart, R, Julia, Dockerfile, ...)
-- Lightweight offline code suggestions (language builtins + open-file words) and automatic indentation while typing
+- **Smart editing with language servers**, like VS Code: errors and warnings underlined as you type (the message shows in the status bar), real completions (`os.` lists what's in `os`), `F1` for types and docs, `F12` or `Ctrl+click` to go to a definition and `Alt+Left` to come back. Uses the standard servers you already have: pyright, clangd, typescript-language-server, rust-analyzer, gopls, texlab and more (see [Language servers](#language-servers))
+- Offline code suggestions (language builtins + open-file words) when no server is installed, and automatic indentation while typing
 - Auto-closing brackets and quotes like VS Code: `(` `[` `{` `"` `'` insert their partner, typing the closer steps over it, Backspace removes an empty pair, Enter inside `{}` opens an indented block, and typing a bracket with text selected wraps it
 - Run any language with `F5` (live keyboard input) or `Shift+F5` (full terminal): Python, C, C++, JavaScript, TypeScript, Bash, Go, Rust, Java, Ruby, PHP, Perl, Lua, Kotlin, Swift, Dart, C#, F#, Haskell, Elixir, Erlang, R, Julia, Scala, Zig, Nim, Crystal, D, Fortran, Pascal, Ada, COBOL, OCaml, Clojure, Groovy, PowerShell, Zsh, Fish, Tcl, Racket, Scheme, Common Lisp, Raku, AWK, Octave, CoffeeScript, Mojo, Odin, Vala and SQL (SQLite). Any script with a `#!` line runs too, and you can add your own commands (see [Run any language](#run-any-language))
 - Web files too: `F5` on an `.html` page opens it in your browser (on a `.css`/`.scss` file it opens the page next to it), `.jsx`/`.tsx` run with `tsx`, `bun` or `deno`, and HTML, CSS, SCSS, Less, Vue, Svelte, Astro, PHP, EJS, Nunjucks and Handlebars all get colors. For framework projects (React, Vue, Next.js...) press `Ctrl+T` and run `npm run dev` in your own shell
@@ -69,6 +70,42 @@ git tag v0.2.1 && git push origin v0.2.1
 ```
 GitHub Actions runs the tests, builds TmCode for Linux, macOS (Intel + Apple Silicon) and Windows, and publishes a Release with checksums. See `.github/workflows/release.yml` to also publish to PyPI automatically.
 
+## Language servers
+
+TmCode talks to the same language servers VS Code and Neovim use. It starts the right one when you open a file, if it's installed, and tells you once how to install it if it isn't.
+
+| Language | Server | Install |
+|---|---|---|
+| Python | basedpyright, pyright, pylsp or jedi-language-server | `pipx install basedpyright` or `npm install -g pyright` |
+| C, C++ | clangd | `sudo apt install clangd`, `brew install llvm`, or `pipx install clangd` |
+| JavaScript, TypeScript | typescript-language-server (TypeScript 7: `tsc --lsp`) | `npm install -g typescript-language-server typescript` |
+| Rust | rust-analyzer | `rustup component add rust-analyzer` |
+| Go | gopls | `go install golang.org/x/tools/gopls@latest` |
+| LaTeX, BibTeX | texlab | `cargo install texlab` or `brew install texlab` |
+| Bash | bash-language-server | `npm install -g bash-language-server` |
+| HTML, CSS, JSON | vscode-langservers-extracted | `npm install -g vscode-langservers-extracted` |
+| Lua, Java, Kotlin, Dart, Zig, Haskell, Ruby, PHP, YAML, TOML, C#, Swift, OCaml | lua-language-server, jdtls, kotlin-language-server, dart, zls, hls, ruby-lsp, intelephense, yaml-language-server, taplo, csharp-ls, sourcekit-lsp, ocamllsp | see each project |
+
+What you get:
+
+- **Problems as you type:** errors underlined in red, warnings in yellow; the message for the cursor's line shows in the status bar, with counts on the right. `/problems` lists them all.
+- **Smart completion:** suggestions from the server (members after `.`, imports, your own functions), falling back to simple word suggestions when there is no server.
+- **`F1`** shows the type, signature and docs of what's under the cursor (and the full error message).
+- **`F12`** or **`Ctrl+click`** goes to the definition, even in another file; **`Alt+Left`** goes back.
+- `/language-server` tells you which server checks the current file, or how to install one.
+
+To use a different server, or turn one off, create `lsp.json` next to `run-commands.json` (`~/.config/termcode/` on Linux):
+
+```json
+{
+  ".py": "pylsp",
+  ".rs": ["ra-multiplex", "client"],
+  ".tex": false
+}
+```
+
+`"*": false` turns language servers off everywhere (or set `TMCODE_NO_LSP=1`).
+
 ## Run any language
 
 `F5` picks the right command from the file extension. You need that language installed (for example `kotlinc` for `.kt`); if it's missing, TmCode tells you what to install.
@@ -122,7 +159,12 @@ Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the f
 | `/clear-output` | `Ctrl+L` | Clear the Terminal output |
 | `/next-tab` | `F11` | Switch to the next open file tab |
 | `/close-tab` | `Ctrl+W` | Close the current file tab |
-| `/split-editor` | `F12` | Toggle side-by-side split editor |
+| `/split-editor` | `Ctrl+\` | Toggle side-by-side split editor |
+| `/go-to-definition` | `F12` | Jump to the definition of the symbol under the cursor (or `Ctrl+click`) |
+| `/go-back` | `Alt+Left` | Back to where you were before going to a definition |
+| `/info` | `F1` | Type, signature and docs of the symbol under the cursor |
+| `/problems` | | List errors and warnings in this file and jump to one |
+| `/language-server` | | Which language server checks this file, or how to install one |
 | `/toggle-comment` | `Ctrl+/` | Comment or uncomment the line or selection |
 | `/word-wrap` | `Alt+Z` | Wrap long lines on or off |
 | `/clean-build` | | Delete the saved programs next to this file (the next run recompiles) |

@@ -70,6 +70,10 @@ _SYNTAX = {
     "punctuation.bracket": Style(color="#8d97a8"),
     "punctuation.delimiter": Style(color="#8d97a8"),
     "punctuation.special": Style(color="#8d97a8"),
+    # Problems reported by the language server (drawn over the syntax colors).
+    "diag.error": Style(color=FAIL, underline=True),
+    "diag.warning": Style(color=BUSY, underline=True),
+    "diag.info": Style(underline=True),
 }
 
 EDITOR_THEME_NAME = "termcode"

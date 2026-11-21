@@ -392,6 +392,7 @@ Tooltip {
 #recent-list,
 #palette-list,
 #picker-list,
+#problems-list,
 #folder-list {
     text-wrap: nowrap;
     text-overflow: ellipsis;
@@ -432,7 +433,7 @@ Tooltip {
 
 #completion-popup {
     layer: overlay;
-    width: 32;
+    width: 44;
     height: auto;
     max-height: 9;
     background: $raised;
@@ -446,6 +447,18 @@ Tooltip {
     background: $select;
     color: $text;
     text-style: bold;
+}
+
+#hover-popup {
+    layer: overlay;
+    width: 60;
+    height: auto;
+    max-height: 16;
+    background: $raised;
+    color: $text;
+    border: round $line;
+    padding: 0 1;
+    display: none;
 }
 
 /* ---------- Find / replace bar ---------- */
@@ -648,6 +661,8 @@ Tooltip {
     width: 1fr;
     height: 1;
     padding: 0 2;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 #status-right {
@@ -662,6 +677,7 @@ CommandPaletteModal,
 TextInputModal,
 FilePickerModal,
 FolderPickerModal,
+ProblemsModal,
 ConfirmModal,
 UpdateModal,
 UnsavedChangesModal {
@@ -734,6 +750,7 @@ UnsavedChangesModal {
 
 #palette-list,
 #picker-list,
+#problems-list,
 #folder-list {
     height: 13;
     max-height: 17;
@@ -744,6 +761,7 @@ UnsavedChangesModal {
 
 #palette-list > .option-list--option-highlighted,
 #picker-list > .option-list--option-highlighted,
+#problems-list > .option-list--option-highlighted,
 #folder-list > .option-list--option-highlighted {
     background: $select;
     color: $text;

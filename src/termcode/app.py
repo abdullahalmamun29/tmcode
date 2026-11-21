@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+import asyncio
+import contextlib
 import os
 from pathlib import Path
 import shutil
@@ -32,6 +34,7 @@ from termcode.findbar import FindBar
 from termcode.formatting import format_code
 from termcode.highlighting import pygments_highlights, pygments_lexer_for, register_extra_languages
 from termcode.pairs import CLOSERS, PAIRS, plan_backspace, plan_enter, plan_typed
+from termcode.lsp import Diagnostic, Location, LspManager, rank_completions, word_start
 from termcode.editing import (
     comment_tokens,
     indent_lines,
@@ -46,6 +49,7 @@ from termcode.modals import (
     CommandPaletteModal,
     ConfirmModal,
     FilePickerModal,
+    ProblemsModal,
     FolderPickerModal,
     TextInputModal,
     UnsavedChangesModal,
@@ -528,13 +532,72 @@ class CodeTextArea(TextArea):
     def _build_highlight_map(self) -> None:
         if self._fallback_lexer is None or self.language is not None:
             super()._build_highlight_map()
+        else:
+            self._line_cache.clear()
+            self._highlights.clear()
+            try:
+                self._highlights.update(pygments_highlights(self.text, self._fallback_lexer))
+            except Exception:
+                pass  # never let coloring break editing
+        self._add_diagnostic_highlights()
+
+    # ---------- language server problems ----------
+
+    diagnostics: list[Diagnostic] = []
+
+    def set_diagnostics(self, diagnostics: list[Diagnostic]) -> None:
+        if not diagnostics and not self.diagnostics:
             return
-        self._line_cache.clear()
-        self._highlights.clear()
-        try:
-            self._highlights.update(pygments_highlights(self.text, self._fallback_lexer))
-        except Exception:
-            pass  # never let coloring break editing
+        self.diagnostics = list(diagnostics)
+        self._build_highlight_map()
+        self.refresh()
+
+    def _add_diagnostic_highlights(self) -> None:
+        if not self.diagnostics:
+            return
+        line_count = self.document.line_count
+        # Least severe first, so errors are drawn last and win.
+        for diag in sorted(self.diagnostics, key=lambda d: -d.severity):
+            name = "diag.error" if diag.severity == 1 else "diag.warning" if diag.severity == 2 else "diag.info"
+            (s_row, s_col), (e_row, e_col) = diag.start, diag.end
+            if s_row >= line_count:
+                continue
+            e_row = min(e_row, line_count - 1)
+            for row in range(s_row, e_row + 1):
+                line = self.document.get_line(row)
+                start = s_col if row == s_row else 0
+                end = e_col if row == e_row else len(line)
+                start = min(start, len(line))
+                end = min(end, len(line))
+                if end <= start:
+                    # Zero-width problem: mark the character (or word) there.
+                    if not line.strip():
+                        continue
+                    if start >= len(line):
+                        start = max(0, len(line.rstrip()) - 1)
+                    end = start + 1
+                b_start = len(line[:start].encode("utf-8"))
+                b_end = len(line[:end].encode("utf-8"))
+                self._highlights[row].append((b_start, b_end, name))
+
+    def diagnostic_at(self, row: int, col: int | None = None) -> Diagnostic | None:
+        """The most severe problem on this row (preferring one under col)."""
+        on_row = [d for d in self.diagnostics if d.start[0] <= row <= d.end[0]]
+        if not on_row:
+            return None
+        if col is not None:
+            under = [d for d in on_row if (d.start[0], d.start[1]) <= (row, col) <= (d.end[0], d.end[1])]
+            if under:
+                on_row = under
+        return min(on_row, key=lambda d: (d.severity, d.start))
+
+    async def _on_click(self, event: events.Click) -> None:
+        await super()._on_click(event)
+        # Ctrl+click goes to the definition, like VS Code.
+        if event.ctrl and not self.read_only:
+            app = self.app
+            if isinstance(app, TermCodeApp):
+                app.action_go_to_definition()
 
     def action_copy(self) -> None:
         """Copy selected text, or the current line when nothing is selected (VS Code behavior)."""
@@ -799,7 +862,10 @@ class TermCodeApp(App[None]):
         Binding("f10", "copy_output", "CopyOut", show=False, priority=True),
         Binding("f11", "next_tab", "NextTab", show=False, priority=True),
         Binding("ctrl+w", "close_tab", "CloseTab", show=False, priority=True),
-        Binding("f12", "toggle_split", "Split", show=False, priority=True),
+        Binding("ctrl+backslash", "toggle_split", "Split", show=False, priority=True),
+        Binding("f1", "hover_info", "Info", show=False, priority=True),
+        Binding("f12", "go_to_definition", "Definition", show=False, priority=True),
+        Binding("alt+left", "go_back", "Back", show=False, priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Files", priority=True),
         Binding("ctrl+j", "toggle_terminal", "Terminal", priority=True),
         Binding("ctrl+l", "clear_output", "Clear", show=False, priority=True),
@@ -842,10 +908,18 @@ class TermCodeApp(App[None]):
         # Set when the user picks "Update now"; cli.main runs the update after exit.
         self.update_to: str | None = None
         self.install_kind: InstallKind = detect_install()
+        # Language servers: errors, smart completions, hover, go to definition.
+        # Decided on mount (off in headless tests unless a test turns it on).
+        self.lsp_enabled: bool | None = None
+        self.lsp = LspManager(self._on_lsp_diagnostics)
+        self._lsp_hinted: set[str] = set()
+        self._lsp_completion_serial = 0
+        self._jump_back: list[tuple[Path, tuple[int, int]]] = []
         self._recent_folders: list[Path] = []
         self._completion_editor: CodeTextArea | None = None
         self._completion_prefix: str = ""
         self._completion_items: list[str] = []
+        self._completion_edits: list[tuple[str, int]] = []  # (text to insert, start column)
         self._just_accepted_completion: bool = False
 
     @property
@@ -931,7 +1005,7 @@ class TermCodeApp(App[None]):
                                 yield Static("Home", id="active-tab", markup=False)
                             yield Static("", id="tab-meta", markup=False)
                             split_btn = Button("Split", id="split-toggle-btn", classes="term-tool-btn")
-                            split_btn.tooltip = "Split editor (F12)"
+                            split_btn.tooltip = "Split editor (Ctrl+\\)"
                             yield split_btn
 
                         with Vertical(id="welcome-view"):
@@ -1023,6 +1097,7 @@ class TermCodeApp(App[None]):
                     )
 
         yield OptionList(id="completion-popup")
+        yield Static("", id="hover-popup", markup=False)
         with Horizontal(id="status-bar"):
             files_btn = Button("Files", id="status-files-btn", classes="status-toggle -on")
             files_btn.tooltip = "Show or hide the sidebar (Ctrl+B)"
@@ -1037,7 +1112,10 @@ class TermCodeApp(App[None]):
         self.query_one("#stdin-input", Input).display = False
         self.query_one("#right-editor-col").display = False
         self.query_one("#completion-popup").display = False
+        self.query_one("#hover-popup").display = False
         self.query_one("#find-bar").display = False
+        if self.lsp_enabled is None:
+            self.lsp_enabled = not self.is_headless and not os.environ.get("TMCODE_NO_LSP")
         self._set_run_state("idle")
         self._refresh_recent_list()
         if not self.is_headless:
@@ -1106,6 +1184,10 @@ class TermCodeApp(App[None]):
             recent_list.add_option(Option(row, id=str(idx)))
 
     def _apply_editor_language(self, editor: CodeTextArea, path: Path | None) -> None:
+        self._apply_language_colors(editor, path)
+        self._lsp_attach(editor, path)
+
+    def _apply_language_colors(self, editor: CodeTextArea, path: Path | None) -> None:
         wanted = editor_language_for_path(path)
         editor.file_path = path
         if wanted and wanted in editor.available_languages:
@@ -1229,6 +1311,16 @@ class TermCodeApp(App[None]):
                 left.append(f"{sep}⎇ {branch}", theme.MUTED)
         else:
             left.append("No folder", theme.MUTED)
+        if not on_welcome:
+            # The problem on the cursor's line replaces the folder name, like an error lens.
+            editor = self._active_editor()
+            diag = editor.diagnostic_at(*editor.cursor_location)
+            if diag is not None:
+                color = theme.FAIL if diag.severity == 1 else theme.BUSY if diag.severity == 2 else theme.MUTED
+                icon = "✗" if diag.severity == 1 else "⚠" if diag.severity == 2 else "ℹ"
+                left = Text(no_wrap=True, overflow="ellipsis")
+                left.append(f"{icon} ", color)
+                left.append(diag.message.splitlines()[0] if diag.message else diag.label, color)
         status_left.update(left)
 
         right = Text(no_wrap=True)
@@ -1236,7 +1328,20 @@ class TermCodeApp(App[None]):
             editor = self._active_editor()
             row, col = editor.cursor_location
             lang_label = language_label_for_path(self.active_file)
-            right.append(f"Ln {row + 1}, Col {col + 1}{sep}{lang_label}{sep}", theme.MUTED)
+            errors = sum(1 for d in editor.diagnostics if d.severity == 1)
+            warnings = sum(1 for d in editor.diagnostics if d.severity == 2)
+            if errors:
+                right.append(f"✗ {errors} ", theme.FAIL)
+            if warnings:
+                right.append(f"⚠ {warnings} ", theme.BUSY)
+            if errors or warnings:
+                right.append(sep)
+            right.append(f"Ln {row + 1}, Col {col + 1}{sep}{lang_label}", theme.MUTED)
+            if self.active_file is not None and self.lsp_enabled:
+                server = self.lsp.server_label(self.active_file)
+                if server:
+                    right.append(f" · {server}", theme.FAINT)
+            right.append(sep)
         right.append("Ctrl+K", theme.TEXT)
         right.append(" commands", theme.MUTED)
         status_right.update(right)
@@ -1358,18 +1463,230 @@ class TermCodeApp(App[None]):
         if follow:
             log.scroll_end(animate=False)
 
+    # ---- Language servers ----
+
+    def _lsp_root(self, path: Path) -> Path:
+        root = self.workspace_root
+        if root is not None:
+            try:
+                path.resolve().relative_to(root.resolve())
+                return root
+            except ValueError:
+                pass
+        return path.parent
+
+    def _lsp_attach(self, editor: CodeTextArea, path: Path | None) -> None:
+        if not self.lsp_enabled or path is None:
+            editor.set_diagnostics([])
+            return
+        editor.set_diagnostics(self.lsp.diagnostics.get(path.resolve(), []))
+        choice = self.lsp.choice_for(path)
+        if choice is None:
+            return
+        if choice.command is None:
+            if choice.key not in self._lsp_hinted:
+                self._lsp_hinted.add(choice.key)
+                self.notify(
+                    f"For error checking and smart completion in {choice.label}, install its "
+                    f"language server:\n{choice.install}",
+                    title="Smarter editing available",
+                    timeout=8,
+                )
+            return
+        self.run_worker(self._lsp_open(path, editor.text), group="lsp", exit_on_error=False)
+
+    async def _lsp_open(self, path: Path, text: str) -> None:
+        ok = await self.lsp.open(path, text, self._lsp_root(path))
+        if not ok:
+            choice = self.lsp.choice_for(path)
+            key = f"failed:{choice.key if choice else path.suffix}"
+            if choice is not None and key not in self._lsp_hinted:
+                self._lsp_hinted.add(key)
+                why = self.lsp.errors.get(choice.key, "")
+                self.notify(
+                    f"The {choice.label} language server didn't start." + (f"\n{why[:300]}" if why else ""),
+                    severity="warning",
+                    timeout=10,
+                )
+        self._update_chrome()
+
+    def _lsp_saved(self, path: Path, text: str) -> None:
+        if self.lsp_enabled:
+            self.run_worker(self.lsp.saved(path, text), group="lsp", exit_on_error=False)
+
+    def _lsp_forget(self, path: Path | None) -> None:
+        if not self.lsp_enabled or path is None:
+            return
+        for pane in (self.left_pane, self.right_pane):
+            if any(b.path is not None and b.path.resolve() == path.resolve() for b in pane.tabs):
+                return
+        self.run_worker(self.lsp.close(path), group="lsp", exit_on_error=False)
+
+    def _on_lsp_diagnostics(self, path: Path) -> None:
+        found = self.lsp.diagnostics.get(path, [])
+        for pane_id in ("left", "right"):
+            if pane_id == "right" and not self.is_split:
+                continue
+            editor = self._editor_for_pane(pane_id)
+            if editor.file_path is not None and editor.file_path.resolve() == path:
+                editor.set_diagnostics(found)
+        self._update_chrome()
+
+    def _editor_file(self) -> tuple[CodeTextArea, Path] | None:
+        if self.query_one("#welcome-view").display or self.active_file is None:
+            return None
+        return self._active_editor(), self.active_file
+
+    def action_hover_info(self) -> None:
+        """F1: show the type and docs of the symbol under the cursor."""
+        target = self._editor_file()
+        if target is None:
+            return
+        editor, path = target
+        if self.lsp.client_for(path) is None:
+            self._explain_no_lsp(path)
+            return
+        self.run_worker(self._show_hover(editor, path), group="lsp-hover", exclusive=True, exit_on_error=False)
+
+    async def _show_hover(self, editor: CodeTextArea, path: Path) -> None:
+        where = editor.cursor_location
+        text = await self.lsp.hover(path, *where)
+        diag = editor.diagnostic_at(*where)
+        if diag is not None:
+            problem = f"{diag.label}: {diag.message}"
+            text = f"{problem}\n\n{text}" if text else problem
+        if editor.cursor_location != where:
+            return
+        if not text:
+            self.notify("No info for this spot.", timeout=2)
+            return
+        self.show_hover(editor, text)
+
+    def show_hover(self, editor: CodeTextArea, text: str) -> None:
+        popup = self.query_one("#hover-popup", Static)
+        lines = text.splitlines()[:14]
+        width = min(max((len(l) for l in lines), default=10) + 2, max(20, self.size.width - 4), 80)
+        popup.update(Text("\n".join(lines), style=theme.TEXT, overflow="fold"))
+        popup.styles.width = width
+        cx, cy = editor.cursor_screen_offset
+        height = min(len(lines), 14) + 2
+        pos_x = max(0, min(cx, self.size.width - width - 1))
+        pos_y = cy + 1 if cy + 1 + height <= self.size.height - 1 else max(0, cy - height)
+        popup.styles.offset = (pos_x, pos_y)
+        popup.display = True
+
+    def hide_hover(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#hover-popup").display = False
+
+    def action_go_to_definition(self) -> None:
+        """F12 / Ctrl+click: jump to where the symbol under the cursor is defined."""
+        target = self._editor_file()
+        if target is None:
+            return
+        editor, path = target
+        if self.lsp.client_for(path) is None:
+            self._explain_no_lsp(path)
+            return
+        self.run_worker(self._go_to_definition(editor, path), group="lsp-def", exclusive=True, exit_on_error=False)
+
+    async def _go_to_definition(self, editor: CodeTextArea, path: Path) -> None:
+        start = editor.cursor_location
+        location = await self.lsp.definition(path, *start)
+        if location is None:
+            self.notify("No definition found here.", timeout=2)
+            return
+        self._jump_back.append((path, start))
+        del self._jump_back[:-50]
+        self._jump_to(location)
+
+    def _jump_to(self, location: Location) -> None:
+        current = self.active_file
+        if current is None or current.resolve() != location.path.resolve():
+            if not location.path.is_file() or not self.load_file(location.path):
+                self.notify(f"Can't open {location.path}", severity="warning")
+                return
+        editor = self._active_editor()
+        row = min(location.row, editor.document.line_count - 1)
+        col = min(location.col, len(editor.document.get_line(row)))
+        editor.move_cursor((row, col), center=True)
+        editor.focus()
+
+    def action_go_back(self) -> None:
+        """Alt+Left: back to where you were before the last go to definition."""
+        if not self._jump_back:
+            return
+        path, (row, col) = self._jump_back.pop()
+        self._jump_to(Location(path, row, col))
+
+    def action_show_problems(self) -> None:
+        """List the problems in this file; pick one to jump to it."""
+        target = self._editor_file()
+        if target is None:
+            return
+        editor, path = target
+        if not editor.diagnostics:
+            if self.lsp.client_for(path) is None:
+                self._explain_no_lsp(path)
+            else:
+                self.notify("No problems in this file.", timeout=2)
+            return
+        options = [
+            (f"{d.start[0] + 1}:{d.start[1] + 1}  {d.label}  {d.message.splitlines()[0]}", f"{i}")
+            for i, d in enumerate(editor.diagnostics)
+        ]
+
+        def _picked(choice: str | None) -> None:
+            if choice is None:
+                return
+            diag = editor.diagnostics[int(choice)] if int(choice) < len(editor.diagnostics) else None
+            if diag is not None:
+                editor.move_cursor(diag.start, center=True)
+                editor.focus()
+
+        self.push_screen(ProblemsModal(options), _picked)
+
+    def action_lsp_info(self) -> None:
+        target = self._editor_file()
+        if target is None:
+            self.notify("Open a file to see its language server.")
+            return
+        _editor, path = target
+        label = self.lsp.server_label(path)
+        if label:
+            self.notify(f"{path.name} is checked by {label}.", title="Language server")
+        else:
+            self._explain_no_lsp(path)
+
+    def _explain_no_lsp(self, path: Path) -> None:
+        if not self.lsp_enabled:
+            self.notify("Language servers are turned off (TMCODE_NO_LSP).")
+            return
+        choice = self.lsp.choice_for(path)
+        if choice is None:
+            self.notify(f"TmCode doesn't know a language server for {path.suffix or path.name} files. "
+                        "You can add one in lsp.json.", timeout=6)
+        elif choice.command is None:
+            self.notify(f"Install the {choice.label} language server to get this:\n{choice.install}",
+                        title="Smarter editing available", timeout=8)
+        else:
+            self.notify(f"The {choice.label} language server is still starting...", timeout=3)
+
     # ---- Inline Autocomplete Popup ----
 
     def is_completion_open_for(self, editor: CodeTextArea) -> bool:
         popup = self.query_one("#completion-popup", OptionList)
         return bool(popup.display and self._completion_editor is editor and self._completion_items)
 
-    def hide_completions(self) -> None:
+    def hide_completions(self, *, keep_pending: bool = False) -> None:
         popup = self.query_one("#completion-popup", OptionList)
         popup.display = False
         self._completion_editor = None
         self._completion_prefix = ""
         self._completion_items = []
+        self._completion_edits = []
+        if not keep_pending:
+            self._lsp_completion_serial += 1  # drop server answers still on the way
 
     def _update_completions(self, editor: CodeTextArea) -> None:
         if editor.read_only or not self._on_main_screen():
@@ -1379,14 +1696,67 @@ class TermCodeApp(App[None]):
         line = editor.document.get_line(row)
         prefix = extract_prefix(line, col)
         items = get_completions(prefix, editor.language, editor.text, limit=7)
+        self._request_lsp_completions(editor, row, col, line)
         if not items:
-            self.hide_completions()
+            self.hide_completions(keep_pending=True)
             return
+        self._show_completion_popup(
+            editor, prefix, [(word, "") for word in items], [(word, col - len(prefix)) for word in items]
+        )
 
+    def _request_lsp_completions(self, editor: CodeTextArea, row: int, col: int, line: str) -> None:
+        path = editor.file_path
+        if not self.lsp_enabled or path is None or self.lsp.client_for(path) is None:
+            return
+        before = line[:col]
+        trigger = next((t for t in self.lsp.trigger_characters(path) if t.strip() and before.endswith(t)), None)
+        typed = before[word_start(line, col):]
+        if not typed and trigger is None:
+            return
+        self._lsp_completion_serial += 1
+        serial = self._lsp_completion_serial
+        self.run_worker(
+            self._lsp_completions(editor, path, row, col, trigger, serial),
+            group="lsp-complete", exclusive=True, exit_on_error=False,
+        )
+
+    async def _lsp_completions(
+        self, editor: CodeTextArea, path: Path, row: int, col: int, trigger: str | None, serial: int
+    ) -> None:
+        await asyncio.sleep(0.08)  # let fast typing settle
+        if serial != self._lsp_completion_serial:
+            return
+        found = await self.lsp.completions(path, row, col, trigger)
+        if serial != self._lsp_completion_serial or editor.cursor_location != (row, col) or self.focused is not editor:
+            return
+        line = editor.document.get_line(row)
+        typed = line[word_start(line, col):col]
+        ranked = rank_completions(found, typed, limit=12)
+        if not ranked:
+            return
+        self._show_completion_popup(
+            editor,
+            typed,
+            [(item.label, item.kind) for item in ranked],
+            [(item.insert, item.start_col) for item in ranked],
+        )
+
+    def _show_completion_popup(
+        self,
+        editor: CodeTextArea,
+        prefix: str,
+        labels: list[tuple[str, str]],
+        edits: list[tuple[str, int]],
+    ) -> None:
+        items = [label for label, _kind in labels]
         popup = self.query_one("#completion-popup", OptionList)
         popup.clear_options()
-        for word in items:
-            popup.add_option(Option(word, id=word))
+        for index, (label, kind) in enumerate(labels):
+            text = Text(no_wrap=True, overflow="ellipsis")
+            text.append(label)
+            if kind:
+                text.append(f"  {kind}", theme.MUTED)
+            popup.add_option(Option(text, id=f"c{index}"))
         popup.highlighted = 0
 
         cx, cy = editor.cursor_screen_offset
@@ -1401,6 +1771,7 @@ class TermCodeApp(App[None]):
         self._completion_editor = editor
         self._completion_prefix = prefix
         self._completion_items = items
+        self._completion_edits = edits
 
     def move_completion(self, delta: int) -> None:
         popup = self.query_one("#completion-popup", OptionList)
@@ -1419,10 +1790,9 @@ class TermCodeApp(App[None]):
         if not (0 <= idx < len(self._completion_items)):
             self.hide_completions()
             return
-        word = self._completion_items[idx]
-        prefix = self._completion_prefix
+        word, start_col = self._completion_edits[idx]
         row, col = target.cursor_location
-        start_col = max(0, col - len(prefix))
+        start_col = max(0, min(start_col, col))
         self.hide_completions()
         self._just_accepted_completion = True
         target.replace(word, (row, start_col), (row, col))
@@ -1535,6 +1905,7 @@ class TermCodeApp(App[None]):
                         self._format_before_save(b, b.path)
                         try:
                             write_text_file(b.path, b.content)
+                            self._lsp_saved(b.path, b.content)
                             b.mark_saved()
                         except WorkspaceError as exc:
                             self.notify(str(exc), severity="error")
@@ -1563,6 +1934,7 @@ class TermCodeApp(App[None]):
             self.notify(str(exc), severity="error")
             return
 
+        self._lsp_saved(buf.path, buf.content)
         buf.mark_saved()
         self._update_chrome()
         self.notify(f"Saved and formatted {buf.path.name}" if formatted else f"Saved {buf.path.name}")
@@ -1829,6 +2201,8 @@ class TermCodeApp(App[None]):
         buf = pane.ensure_untitled()
         buf.content = event.text_area.text
         buf.cursor = event.text_area.cursor_location
+        if self.lsp_enabled and buf.path is not None:
+            self.lsp.change(buf.path, buf.content)
         self._update_chrome()
         if isinstance(event.text_area, CodeTextArea):
             if self.focused is not event.text_area:
@@ -1840,6 +2214,7 @@ class TermCodeApp(App[None]):
 
     def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
         if event.text_area.id in ("editor", "editor-right"):
+            self.hide_hover()
             self._update_chrome()
 
     def on_tree_node_highlighted(self, event: DirectoryTree.NodeHighlighted) -> None:
@@ -2356,6 +2731,7 @@ class TermCodeApp(App[None]):
 
         def _do_close() -> None:
             pane.close_tab(pane.active_index)
+            self._lsp_forget(buf.path)
             if pane_id == "right" and not pane.tabs:
                 self.is_split = False
                 self.query_one("#right-editor-col").display = False
@@ -2603,4 +2979,10 @@ class TermCodeApp(App[None]):
     async def _shutdown_and_exit(self) -> None:
         if self.runner.is_running:
             await self.runner.stop()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.lsp.shutdown(), 4.0)
         self.exit()
+
+    def on_unmount(self) -> None:
+        # Never leave a language server running behind us.
+        self.lsp.kill_all()
