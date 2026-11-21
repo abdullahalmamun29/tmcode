@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 import os
+import hashlib
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -49,6 +52,9 @@ class RunPlan:
     run_cmd: list[str]
     cwd: Path
     display_cmd: str
+    # True when compile_cmd writes only into temp_dir, so the result can be kept
+    # in the build folder and reused while the source is unchanged.
+    cacheable: bool = False
 
 
 @dataclass(frozen=True)
@@ -299,6 +305,7 @@ def _plan_from_recipe(
         run_cmd=run_cmd,
         cwd=source.parent,
         display_cmd=display,
+        cacheable=bool(compile_tpl) and any("{out}" in t or "{tmp}" in t for t in compile_tpl),
     )
 
 
@@ -680,6 +687,7 @@ def build_run_plan(
             run_cmd=[str(output_bin)],
             cwd=cwd,
             display_cmd=f"gcc -Wall -Wextra {source.name} && ./{binary_name}",
+            cacheable=True,
         )
 
     if lang is Language.CPP:
@@ -703,6 +711,7 @@ def build_run_plan(
             run_cmd=[str(output_bin)],
             cwd=cwd,
             display_cmd=f"g++ -std=c++17 -Wall -Wextra {source.name} && ./{binary_name}",
+            cacheable=True,
         )
 
     if lang is Language.RUST:
@@ -716,6 +725,7 @@ def build_run_plan(
             run_cmd=[str(output_bin)],
             cwd=cwd,
             display_cmd=f"rustc {source.name} && ./{binary_name}",
+            cacheable=True,
         )
 
     if lang is Language.GO:
@@ -781,6 +791,123 @@ def build_run_plan(
     )
 
 
+# ---------- build folder: keep compiled programs between runs ----------
+#
+# Compiled languages build into a hidden `.tmcode` folder next to the source:
+#   hello.c++  ->  .tmcode/hello.c++/app   (plus build.stamp)
+# F5 again with no changes runs the previous program without recompiling.
+# The folder has its own .gitignore, so git ignores it.
+
+BUILD_FOLDER = ".tmcode"
+_STAMP = "build.stamp"
+
+
+def build_dir_for(source: Path) -> Path:
+    """Where source's compiled program is kept (not created here)."""
+    return source.parent / BUILD_FOLDER / source.name
+
+
+def _prepare_build_dir(target: Path) -> bool:
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        ignore = target.parent / ".gitignore"
+        if not ignore.exists():
+            ignore.write_text("# Programs built by TmCode. Safe to delete.\n*\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+_C_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+_RUST_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;", re.MULTILINE)
+
+
+def _local_dependencies(source: Path, limit: int = 200) -> list[Path]:
+    """Files next to source that it pulls in: #include "x.h" (C/C++) and mod x; (Rust)."""
+    seen: dict[Path, None] = {}
+    queue = [source]
+    while queue and len(seen) < limit:
+        current = queue.pop()
+        try:
+            text = current.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        found: list[Path] = []
+        if current.suffix.lower() == ".rs":
+            for name in _RUST_MOD.findall(text):
+                found += [current.parent / f"{name}.rs", current.parent / name / "mod.rs"]
+        else:
+            found += [current.parent / inc for inc in _C_INCLUDE.findall(text)]
+        for dep in found:
+            dep = dep.resolve()
+            if dep.is_file() and dep not in seen and dep != source.resolve():
+                seen[dep] = None
+                queue.append(dep)
+    return list(seen)
+
+
+def build_key(plan: RunPlan) -> str:
+    """Fingerprint of everything that goes into the build: commands, compiler, source and local headers."""
+    digest = hashlib.sha256()
+    for part in (*(plan.compile_cmd or []), "\0", *plan.run_cmd):
+        digest.update(part.encode("utf-8", errors="replace") + b"\0")
+    if plan.compile_cmd:
+        try:
+            stat = Path(plan.compile_cmd[0]).stat()
+            digest.update(f"{stat.st_mtime_ns}:{stat.st_size}".encode())
+        except OSError:
+            pass
+    for path in (plan.source, *_local_dependencies(plan.source)):
+        digest.update(str(path).encode("utf-8", errors="replace") + b"\0")
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(b"<missing>")
+    return digest.hexdigest()
+
+
+def reusable_build(plan: RunPlan, build_dir: Path) -> bool:
+    """True if build_dir already holds this exact build and its program still exists."""
+    if not plan.cacheable or plan.compile_cmd is None:
+        return False
+    try:
+        if (build_dir / _STAMP).read_text(encoding="utf-8").strip() != build_key(plan):
+            return False
+    except OSError:
+        return False
+    outputs = [Path(arg) for arg in plan.run_cmd if Path(arg).parent == build_dir or build_dir in Path(arg).parents]
+    if not outputs or not all(p.exists() for p in outputs):
+        return False
+    return True
+
+
+def record_build(plan: RunPlan, build_dir: Path, ok: bool) -> None:
+    stamp = build_dir / _STAMP
+    try:
+        if ok and plan.cacheable:
+            stamp.write_text(build_key(plan) + "\n", encoding="utf-8")
+        else:
+            stamp.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def planned_run(source: Path, workspace_root: Path):  # type: ignore[no-untyped-def]
+    """Yield (plan, build_dir). Compiled languages get the source's build folder
+    (build_dir set); everything else gets a throwaway temp folder (build_dir None)."""
+    target = build_dir_for(source)
+    plan = build_run_plan(source, workspace_root, target)
+    if plan.cacheable and _prepare_build_dir(target):
+        yield plan, target
+        return
+    with tempfile.TemporaryDirectory(prefix="termcode_") as tmp:
+        yield build_run_plan(source, workspace_root, Path(tmp)), None
+
+
+REUSED_NOTE = "(no changes since the last build: running the previous program)\n"
+
+
 class AsyncRunner:
     """Manages asynchronous compilation and interactive execution of a single program."""
 
@@ -809,12 +936,14 @@ class AsyncRunner:
         start = time.monotonic()
 
         try:
-            with tempfile.TemporaryDirectory(prefix="termcode_") as tmp:
-                plan = build_run_plan(source, workspace_root, Path(tmp))
-
-                # Step 1: Compile (C / C++)
-                if plan.compile_cmd is not None:
+            with planned_run(source, workspace_root) as (plan, build_dir):
+                # Step 1: Compile, unless the last build is still up to date.
+                if build_dir is not None and reusable_build(plan, build_dir):
+                    on_output(REUSED_NOTE)
+                elif plan.compile_cmd is not None:
                     compile_rc = await self._run_compile(plan.compile_cmd, plan.cwd, on_output)
+                    if build_dir is not None:
+                        record_build(plan, build_dir, ok=compile_rc == 0 and not self._cancelled)
                     if self._cancelled:
                         return RunResult(
                             exit_code=compile_rc,
@@ -1103,15 +1232,18 @@ def run_in_foreground(source: Path, workspace_root: Path) -> RunResult:
     Ctrl+C stops the program and is reported as cancelled.
     """
     start = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="termcode_") as tmp:
-        plan = build_run_plan(source, workspace_root, Path(tmp))
+    with planned_run(source, workspace_root) as (plan, build_dir):
 
         def _wait(proc: subprocess.Popen[bytes]) -> tuple[int, bool]:
             rc, interrupted = wait_ignoring_ctrl_c(proc)
             return rc, interrupted
 
-        if plan.compile_cmd is not None:
+        if build_dir is not None and reusable_build(plan, build_dir):
+            print(REUSED_NOTE, end="", flush=True)
+        elif plan.compile_cmd is not None:
             compile_rc, cancelled = _wait(subprocess.Popen(plan.compile_cmd, cwd=plan.cwd))
+            if build_dir is not None:
+                record_build(plan, build_dir, ok=compile_rc == 0 and not cancelled)
             if cancelled or compile_rc != 0:
                 return RunResult(
                     exit_code=compile_rc,

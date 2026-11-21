@@ -198,6 +198,27 @@ COMMANDS: tuple[CommandSpec, ...] = (
         description="Fix indentation in the current file now",
     ),
     CommandSpec(
+        command="/clean-build",
+        action="clean_builds",
+        shortcut="",
+        binding="",
+        description="Delete saved programs next to this file; the next run recompiles",
+    ),
+    CommandSpec(
+        command="/toggle-comment",
+        action="editor_toggle_comment",
+        shortcut="Ctrl+/",
+        binding="",
+        description="Comment or uncomment the line or selection",
+    ),
+    CommandSpec(
+        command="/word-wrap",
+        action="editor_toggle_wrap",
+        shortcut="Alt+Z",
+        binding="",
+        description="Wrap long lines on or off",
+    ),
+    CommandSpec(
         command="/format-on-save",
         action="toggle_format_on_save",
         shortcut="",

@@ -33,10 +33,13 @@ def test_all_spec_commands_present_with_unique_shortcuts() -> None:
         "/goto-line",
         "/format-file",
         "/format-on-save",
+        "/clean-build",
+        "/toggle-comment",
+        "/word-wrap",
         "/quit",
     }
 
-    bindings = [c.binding for c in COMMANDS]
+    bindings = [c.binding for c in COMMANDS if c.binding]
     assert len(bindings) == len(set(bindings))
 
     # Must never collide with basic editor keys or terminal interrupt signals

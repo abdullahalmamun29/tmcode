@@ -13,6 +13,8 @@ Lightweight, cross-platform VS Code-style terminal code editor for **any languag
 - Auto-closing brackets and quotes like VS Code: `(` `[` `{` `"` `'` insert their partner, typing the closer steps over it, Backspace removes an empty pair, Enter inside `{}` opens an indented block, and typing a bracket with text selected wraps it
 - Run any language with `F5` (live keyboard input) or `Shift+F5` (full terminal): Python, C, C++, JavaScript, TypeScript, Bash, Go, Rust, Java, Ruby, PHP, Perl, Lua, Kotlin, Swift, Dart, C#, F#, Haskell, Elixir, Erlang, R, Julia, Scala, Zig, Nim, Crystal, D, Fortran, Pascal, Ada, COBOL, OCaml, Clojure, Groovy, PowerShell, Zsh, Fish, Tcl, Racket, Scheme, Common Lisp, Raku, AWK, Octave, CoffeeScript, Mojo, Odin, Vala and SQL (SQLite). Any script with a `#!` line runs too, and you can add your own commands (see [Run any language](#run-any-language))
 - Web files too: `F5` on an `.html` page opens it in your browser (on a `.css`/`.scss` file it opens the page next to it), `.jsx`/`.tsx` run with `tsx`, `bun` or `deno`, and HTML, CSS, SCSS, Less, Vue, Svelte, Astro, PHP, EJS, Nunjucks and Handlebars all get colors. For framework projects (React, Vue, Next.js...) press `Ctrl+T` and run `npm run dev` in your own shell
+- VS Code editing keys: move/copy lines with `Alt+Up/Down`, `Ctrl+/` comments, `Shift+Delete` cuts the line, `Tab`/`Shift+Tab` indent blocks, `Ctrl+D`, smart `Home` and more (see [Editing keys](#editing-keys-vs-code-style))
+- Compiled programs are kept in a hidden `.tmcode` folder, so running an unchanged file again starts instantly
 - LaTeX: `F5` on a `.tex` file builds the PDF (with `latexmk`, or `pdflatex`/`xelatex`/`lualatex`, or `tectonic`) and opens it. It picks XeLaTeX for `fontspec`/`polyglossia` documents (Bangla, Arabic, CJK...), honors `% !TEX program = ...` and `% !TEX root = ...`, and on a chapter file builds the main document next to it
 - Update prompt on start, like Codex: **Update now**, **Skip**, or **Skip until next version** (checks at most once a day; turn off with `TMCODE_NO_UPDATE_CHECK=1`). `tmcode --update` updates any time
 - Real OS clipboard integration (Linux X11/Wayland, macOS, Windows), `Ctrl+A` select-all, and VS Code-style `Ctrl+C` (copies selection or current line)
@@ -121,7 +123,32 @@ Open the menu anytime with **`Ctrl+K`**, or press **`/`** when focus is on the f
 | `/next-tab` | `F11` | Switch to the next open file tab |
 | `/close-tab` | `Ctrl+W` | Close the current file tab |
 | `/split-editor` | `F12` | Toggle side-by-side split editor |
+| `/toggle-comment` | `Ctrl+/` | Comment or uncomment the line or selection |
+| `/word-wrap` | `Alt+Z` | Wrap long lines on or off |
+| `/clean-build` | | Delete the saved programs next to this file (the next run recompiles) |
 | `/quit` | `Ctrl+Q` | Exit TmCode |
+
+### Editing keys (VS Code style)
+
+| Keys | Action |
+|---|---|
+| `Ctrl+C` / `Ctrl+X` / `Shift+Delete` | Copy / cut the selection, or the whole line when nothing is selected |
+| `Ctrl+Shift+K` | Delete the line |
+| `Alt+Up` / `Alt+Down` | Move the line (or selected lines) up / down |
+| `Alt+Shift+Up` / `Alt+Shift+Down` | Copy the line (or selected lines) up / down |
+| `Ctrl+/` | Toggle comment, with the right marker for the language (`#`, `//`, `--`, `%`, `<!-- -->`...) |
+| `Tab` / `Shift+Tab` | Indent / outdent the selected lines |
+| `Ctrl+D` | Select the word; press again to jump to its next match |
+| `Home` | First non-blank character; press again for column 0 |
+| `Ctrl+Home` / `Ctrl+End` | Top / end of the file (add `Shift` to select) |
+| `Ctrl+Backspace` / `Ctrl+Delete` | Delete the word left / right |
+| `Ctrl+Enter` / `Ctrl+Shift+Enter` | New line below / above (only in terminals that report these keys, e.g. kitty, WezTerm, Ghostty) |
+| `Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z` | Undo / redo |
+| `Alt+Z` | Word wrap on / off |
+
+### Faster re-runs
+
+Compiled languages (C, C++, Rust, Kotlin, Fortran, Pascal, Ada...) build into a hidden `.tmcode` folder next to your file. Press `F5` again without changing anything and TmCode runs the previous program straight away instead of compiling again. Editing the file, or a local header it includes, triggers a fresh build. The folder ignores itself in git; delete it any time (or run `/clean-build`).
 
 ## Running Tests
 

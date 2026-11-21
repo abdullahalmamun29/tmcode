@@ -93,7 +93,7 @@ def test_build_run_plan_win32_exe_and_missing_compiler(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_python_c_cpp_and_no_stray_binaries(tmp_path: Path) -> None:
+async def test_run_python_c_cpp_builds_only_in_the_hidden_folder(tmp_path: Path) -> None:
     py_f = tmp_path / "hi.py"
     py_f.write_text("print('py-ok')\n", encoding="utf-8")
     c_f = tmp_path / "hi.c"
@@ -108,7 +108,15 @@ async def test_run_python_c_cpp_and_no_stray_binaries(tmp_path: Path) -> None:
         assert res.exit_code == 0 and not res.compile_failed and not res.cancelled
         assert expected in "".join(chunks)
 
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["hi.c", "hi.cpp", "hi.py"]
+    # Programs go into the hidden .tmcode folder, nothing else next to the code.
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".tmcode", "hi.c", "hi.cpp", "hi.py"]
+    assert sorted(p.name for p in (tmp_path / ".tmcode").iterdir()) == [".gitignore", "hi.c", "hi.cpp"]
+
+    # Running C again without changes reuses the program.
+    chunks = []
+    res = await runner.run(c_f, tmp_path, chunks.append)
+    assert res.exit_code == 0
+    assert "no changes since the last build" in "".join(chunks) and "c-ok" in "".join(chunks)
 
 
 @pytest.mark.asyncio
@@ -453,3 +461,48 @@ def test_latex_chapter_file_builds_the_main_document(tmp_path: Path) -> None:
     (tmp_path / "notes.tex").unlink()
     with pytest.raises(RunnerError, match="no main .tex"):
         build_run_plan(part, tmp_path, tmp_path / "t", platform="linux", which=_which_all, user_commands={})
+
+
+def test_build_folder_reuses_the_program_until_the_source_changes(tmp_path: Path) -> None:
+    import shutil as _sh
+
+    from termcode.runner import BUILD_FOLDER, planned_run, record_build, reusable_build
+
+    if _sh.which("gcc") is None:
+        pytest.skip("gcc not installed")
+    import subprocess
+
+    src = tmp_path / "hello.c"
+    header = tmp_path / "msg.h"
+    header.write_text('#define MSG "one"\n', encoding="utf-8")
+    src.write_text('#include <stdio.h>\n#include "msg.h"\nint main(void){puts(MSG);}\n', encoding="utf-8")
+
+    def run_once() -> tuple[bool, str]:
+        with planned_run(src, tmp_path) as (plan, build_dir):
+            assert build_dir == tmp_path / BUILD_FOLDER / "hello.c"
+            reused = reusable_build(plan, build_dir)
+            if not reused:
+                ok = subprocess.run(plan.compile_cmd, cwd=plan.cwd).returncode == 0
+                record_build(plan, build_dir, ok=ok)
+            out = subprocess.run(plan.run_cmd, cwd=plan.cwd, capture_output=True, text=True).stdout
+            return reused, out.strip()
+
+    assert run_once() == (False, "one")
+    assert run_once() == (True, "one")  # unchanged: no recompile
+    assert (tmp_path / BUILD_FOLDER / ".gitignore").read_text().strip().endswith("*")
+    header.write_text('#define MSG "two"\n', encoding="utf-8")
+    assert run_once() == (False, "two")  # a local header changed
+    src.write_text(src.read_text() + "// edit\n", encoding="utf-8")
+    assert run_once()[0] is False  # the source changed
+    (tmp_path / BUILD_FOLDER / "hello.c" / "a.out").unlink()
+    assert run_once()[0] is False  # program deleted
+
+
+def test_interpreted_files_make_no_build_folder(tmp_path: Path) -> None:
+    from termcode.runner import BUILD_FOLDER, planned_run
+
+    src = tmp_path / "a.py"
+    src.write_text("print(1)", encoding="utf-8")
+    with planned_run(src, tmp_path) as (_plan, build_dir):
+        assert build_dir is None
+    assert not (tmp_path / BUILD_FOLDER).exists()

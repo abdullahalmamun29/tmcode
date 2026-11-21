@@ -32,6 +32,16 @@ from termcode.findbar import FindBar
 from termcode.formatting import format_code
 from termcode.highlighting import pygments_highlights, pygments_lexer_for, register_extra_languages
 from termcode.pairs import CLOSERS, PAIRS, plan_backspace, plan_enter, plan_typed
+from termcode.editing import (
+    comment_tokens,
+    indent_lines,
+    indent_unit,
+    move_lines,
+    outdent_lines,
+    smart_home_column,
+    toggle_comment,
+    word_at,
+)
 from termcode.modals import (
     CommandPaletteModal,
     ConfirmModal,
@@ -53,6 +63,7 @@ from termcode.runner import (
     AsyncRunner,
     RunResult,
     RunnerError,
+    BUILD_FOLDER,
     build_run_plan,
     editor_language_for_path,
     language_label_for_path,
@@ -301,7 +312,201 @@ class CodeTextArea(TextArea):
 
     BINDINGS = [
         Binding("ctrl+a", "select_all", "Select All", show=False),
+        Binding("shift+delete", "cut", "Cut line", show=False),
+        Binding("ctrl+shift+k", "delete_line", "Delete line", show=False),
+        Binding("alt+up", "move_lines(-1)", "Move line up", show=False),
+        Binding("alt+down", "move_lines(1)", "Move line down", show=False),
+        Binding("alt+shift+up", "copy_lines(-1)", "Copy line up", show=False),
+        Binding("alt+shift+down,ctrl+shift+d", "copy_lines(1)", "Copy line down", show=False),
+        Binding("ctrl+slash,ctrl+underscore", "toggle_comment", "Toggle comment", show=False),
+        Binding("ctrl+d", "select_next_match", "Select word / next match", show=False),
+        Binding("home", "smart_home", "Line start", show=False),
+        Binding("shift+home", "smart_home(True)", "Select to line start", show=False),
+        Binding("ctrl+home", "document_start", "Top of file", show=False),
+        Binding("ctrl+end", "document_end", "End of file", show=False),
+        Binding("ctrl+shift+home", "document_start(True)", "Select to top", show=False),
+        Binding("ctrl+shift+end", "document_end(True)", "Select to end", show=False),
+        Binding("ctrl+delete", "delete_word_right", "Delete word right", show=False),
+        Binding("ctrl+shift+z", "redo", "Redo", show=False),
+        Binding("ctrl+enter", "insert_line(1)", "New line below", show=False),
+        Binding("ctrl+shift+enter", "insert_line(0)", "New line above", show=False),
+        Binding("shift+tab", "outdent", "Outdent", show=False),
+        Binding("alt+z", "toggle_wrap", "Word wrap", show=False),
     ]
+
+    # The open file; picks comment markers for Ctrl+/.
+    file_path: Path | None = None
+
+    # ---------- line helpers ----------
+
+    def _selected_rows(self) -> tuple[int, int]:
+        """First and last row touched by the selection (a selection ending at
+        column 0 doesn't include that last line, like VS Code)."""
+        start, end = sorted(self.selection)
+        last = end[0]
+        if end[0] > start[0] and end[1] == 0:
+            last -= 1
+        return start[0], last
+
+    def _replace_rows(self, first: int, last: int, new_lines: list[str]) -> None:
+        """Replace whole rows first..last with new_lines as one undo step."""
+        end_col = len(self.document.get_line(last))
+        self.replace("\n".join(new_lines), (first, 0), (last, end_col))
+
+    def _row_lines(self, first: int, last: int) -> list[str]:
+        return [self.document.get_line(r) for r in range(first, last + 1)]
+
+    # ---------- actions ----------
+
+    def action_move_lines(self, direction: int) -> None:
+        """Alt+Up / Alt+Down: move the current line (or selected lines)."""
+        if self.read_only:
+            return
+        first, last = self._selected_rows()
+        all_lines = self._row_lines(0, self.document.line_count - 1)
+        moved = move_lines(all_lines, first, last, direction)
+        if moved is None:
+            return
+        new_lines, new_first = moved
+        lo, hi = min(first, new_first), max(last, new_first + (last - first))
+        selection = self.selection
+        self._replace_rows(lo, hi, new_lines[lo : hi + 1])
+        shift = new_first - first
+        self.selection = Selection(
+            (selection.start[0] + shift, selection.start[1]),
+            (selection.end[0] + shift, selection.end[1]),
+        )
+
+    def action_copy_lines(self, direction: int) -> None:
+        """Alt+Shift+Up / Alt+Shift+Down: duplicate the line (or selected lines)."""
+        if self.read_only:
+            return
+        first, last = self._selected_rows()
+        block = self._row_lines(first, last)
+        selection = self.selection
+        end_col = len(self.document.get_line(last))
+        self.insert("\n" + "\n".join(block), (last, end_col))
+        if direction > 0:
+            shift = last - first + 1
+            self.selection = Selection(
+                (selection.start[0] + shift, selection.start[1]),
+                (selection.end[0] + shift, selection.end[1]),
+            )
+        else:
+            self.selection = selection
+
+    def action_toggle_comment(self) -> None:
+        """Ctrl+/: comment or uncomment the line (or selected lines)."""
+        if self.read_only:
+            return
+        first, last = self._selected_rows()
+        before = self._row_lines(first, last)
+        after = toggle_comment(before, comment_tokens(self.file_path))
+        if after == before:
+            return
+        selection = self.selection
+        self._replace_rows(first, last, after)
+        # Keep the cursor on the same text: shift columns by what changed on each line.
+        def moved(loc: tuple[int, int]) -> tuple[int, int]:
+            row, col = loc
+            if first <= row <= last:
+                delta = len(after[row - first]) - len(before[row - first])
+                return row, max(0, min(len(after[row - first]), col + delta))
+            return loc
+        self.selection = Selection(moved(selection.start), moved(selection.end))
+
+    def action_outdent(self) -> None:
+        """Shift+Tab: remove one indent level from the line (or selected lines)."""
+        if self.read_only:
+            return
+        first, last = self._selected_rows()
+        before = self._row_lines(first, last)
+        after, removed = outdent_lines(before, indent_unit(self.text))
+        if after == before:
+            return
+        selection = self.selection
+        self._replace_rows(first, last, after)
+
+        def moved(loc: tuple[int, int]) -> tuple[int, int]:
+            row, col = loc
+            if first <= row <= last:
+                return row, max(0, col - removed[row - first])
+            return loc
+        self.selection = Selection(moved(selection.start), moved(selection.end))
+
+    def _indent_selection(self) -> None:
+        first, last = self._selected_rows()
+        before = self._row_lines(first, last)
+        unit = indent_unit(self.text)
+        after = indent_lines(before, unit)
+        selection = self.selection
+        self._replace_rows(first, last, after)
+
+        def moved(loc: tuple[int, int]) -> tuple[int, int]:
+            row, col = loc
+            if first <= row <= last and before[row - first].strip():
+                return row, col + len(unit)
+            return loc
+        self.selection = Selection(moved(selection.start), moved(selection.end))
+
+    def action_smart_home(self, select: bool = False) -> None:
+        """Home: first non-blank character, press again for column 0."""
+        row, col = self.cursor_location
+        target = (row, smart_home_column(self.document.get_line(row), col))
+        self.move_cursor(target, select=select)
+
+    def action_document_start(self, select: bool = False) -> None:
+        self.move_cursor((0, 0), select=select)
+
+    def action_document_end(self, select: bool = False) -> None:
+        last = self.document.line_count - 1
+        self.move_cursor((last, len(self.document.get_line(last))), select=select)
+
+    def action_insert_line(self, below: int = 1) -> None:
+        """Ctrl+Enter: new line below; Ctrl+Shift+Enter: new line above (keeps indent)."""
+        if self.read_only:
+            return
+        row = self.cursor_location[0]
+        line = self.document.get_line(row)
+        indent = line[: len(line) - len(line.lstrip(" \t"))]
+        if below:
+            if line.rstrip().endswith((":", "{", "(", "[")):
+                indent += indent_unit(self.text)
+            self.insert("\n" + indent, (row, len(line)))
+            self.move_cursor((row + 1, len(indent)))
+        else:
+            self.insert(indent + "\n", (row, 0))
+            self.move_cursor((row, len(indent)))
+
+    def action_select_next_match(self) -> None:
+        """Ctrl+D: select the word at the cursor; press again to jump to its next match."""
+        selected = self.selected_text
+        if not selected:
+            row, col = self.cursor_location
+            span = word_at(self.document.get_line(row), col)
+            if span is not None:
+                self.selection = Selection((row, span[0]), (row, span[1]))
+            return
+        if "\n" in selected:
+            return
+        text = self.text
+        lines = text.split("\n")
+        _, end = sorted(self.selection)
+        offset = sum(len(lines[r]) + 1 for r in range(end[0])) + end[1]
+        found = text.find(selected, offset)
+        if found < 0:
+            found = text.find(selected)  # wrap around
+        if found < 0:
+            return
+        row = text.count("\n", 0, found)
+        col = found - (text.rfind("\n", 0, found) + 1)
+        self.selection = Selection((row, col), (row, col + len(selected)))
+        self.scroll_cursor_visible()
+
+    def action_toggle_wrap(self) -> None:
+        """Alt+Z: wrap long lines on/off."""
+        self.soft_wrap = not self.soft_wrap
+        self.app.notify("Word wrap on" if self.soft_wrap else "Word wrap off", timeout=1.5)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
@@ -375,6 +580,14 @@ class CodeTextArea(TextArea):
             find_bar = app.query_one("#find-bar", FindBar)
             if find_bar.is_open:
                 find_bar.action_close()
+                event.prevent_default()
+                event.stop()
+                return
+
+        if event.key == "tab":
+            first, last = self._selected_rows()
+            if self.selected_text and last > first:
+                self._indent_selection()
                 event.prevent_default()
                 event.stop()
                 return
@@ -894,6 +1107,7 @@ class TermCodeApp(App[None]):
 
     def _apply_editor_language(self, editor: CodeTextArea, path: Path | None) -> None:
         wanted = editor_language_for_path(path)
+        editor.file_path = path
         if wanted and wanted in editor.available_languages:
             editor.set_fallback_lexer(None)
             editor.language = wanted
@@ -1424,6 +1638,35 @@ class TermCodeApp(App[None]):
         else:
             self.notify("Formatted" if changed else "Already tidy")
         self._update_chrome()
+
+    def action_editor_toggle_comment(self) -> None:
+        editor = self._active_editor()
+        editor.action_toggle_comment()
+        editor.focus()
+
+    def action_editor_toggle_wrap(self) -> None:
+        editor = self._active_editor()
+        editor.action_toggle_wrap()
+        editor.focus()
+
+    def action_clean_builds(self) -> None:
+        """Delete the saved programs (.tmcode) next to the current file; the next run rebuilds."""
+        if self.active_file is None:
+            self.notify("Open a file first.")
+            return
+        if self.runner.is_running:
+            self.notify("Stop the running program first (F7).", severity="warning")
+            return
+        folder = self.active_file.parent / BUILD_FOLDER
+        if not folder.is_dir():
+            self.notify("Nothing to clean: no saved builds next to this file.")
+            return
+        try:
+            shutil.rmtree(folder)
+        except OSError as exc:
+            self.notify(f"Could not delete {folder.name}: {exc}", severity="error")
+            return
+        self.notify("Deleted saved builds. The next run compiles fresh.")
 
     def action_toggle_format_on_save(self) -> None:
         self.format_on_save = not self.format_on_save

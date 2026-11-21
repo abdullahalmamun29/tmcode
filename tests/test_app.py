@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from textual.widgets import DirectoryTree, Input, TextArea
+from textual.widgets.text_area import Selection
 
 from termcode.app import TermCodeApp
 from termcode.cli import parse_cli_target
@@ -929,3 +930,82 @@ async def test_any_language_gets_colors_via_pygments(tmp_path: Path) -> None:
         await pilot.pause()
         assert any(n == "comment" for *_r, n in editor._highlights[3])
         assert "Kotlin" in str(app.query_one("#status-right").render())
+
+
+@pytest.mark.asyncio
+async def test_vscode_style_editing_shortcuts(tmp_path: Path) -> None:
+    src = tmp_path / "a.py"
+    src.write_text("", encoding="utf-8")
+    app = TermCodeApp(tmp_path, src, recent_store=tmp_path / "recent.json")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        editor = app.query_one("#editor", TextArea)
+        editor.focus()
+        await pilot.pause()
+
+        # Alt+Up / Alt+Down move the line.
+        editor.load_text("a\nb\nc")
+        editor.move_cursor((1, 1))
+        await pilot.press("alt+up")
+        assert editor.text == "b\na\nc" and editor.cursor_location == (0, 1)
+        await pilot.press("alt+down", "alt+down")
+        assert editor.text == "a\nc\nb" and editor.cursor_location == (2, 1)
+
+        # Alt+Shift+Down duplicates it.
+        await pilot.press("alt+shift+down")
+        assert editor.text == "a\nc\nb\nb" and editor.cursor_location == (3, 1)
+
+        # Shift+Delete cuts the whole line.
+        editor.move_cursor((1, 0))
+        await pilot.press("shift+delete")
+        assert editor.text == "a\nb\nb"
+
+        # Ctrl+/ comments and uncomments with the file's marker.
+        editor.load_text("x = 1\n    y = 2")
+        editor.selection = Selection((0, 0), (1, 3))
+        await pilot.press("ctrl+underscore")
+        assert editor.text == "# x = 1\n#     y = 2"
+        await pilot.press("ctrl+slash")
+        assert editor.text == "x = 1\n    y = 2"
+
+        # Tab indents a multi-line selection; Shift+Tab outdents.
+        editor.selection = Selection((0, 0), (1, 5))
+        await pilot.press("tab")
+        assert editor.text == "    x = 1\n        y = 2"
+        await pilot.press("shift+tab", "shift+tab")
+        assert editor.text == "x = 1\ny = 2"
+
+        # Smart Home, then Ctrl+Home / Ctrl+End.
+        editor.load_text("top\n    body()")
+        editor.move_cursor((1, 8))
+        await pilot.press("home")
+        assert editor.cursor_location == (1, 4)
+        await pilot.press("home")
+        assert editor.cursor_location == (1, 0)
+        await pilot.press("ctrl+home")
+        assert editor.cursor_location == (0, 0)
+        await pilot.press("ctrl+end")
+        assert editor.cursor_location == (1, 10)
+
+        # Ctrl+D selects the word, then jumps to the next match.
+        editor.load_text("cat dog cat")
+        editor.move_cursor((0, 1))
+        await pilot.press("ctrl+d")
+        assert editor.selected_text == "cat"
+        await pilot.press("ctrl+d")
+        assert editor.selection == Selection((0, 8), (0, 11))
+
+        # Ctrl+Delete deletes the word to the right; Ctrl+Shift+Z redoes.
+        editor.load_text("hello world")
+        editor.move_cursor((0, 6))
+        await pilot.press("ctrl+delete")
+        assert editor.text == "hello "
+        await pilot.press("ctrl+z")
+        assert editor.text == "hello world"
+        await pilot.press("ctrl+shift+z")
+        assert editor.text == "hello "
+
+        # Alt+Z toggles word wrap.
+        before = editor.soft_wrap
+        await pilot.press("alt+z")
+        assert editor.soft_wrap is (not before)
