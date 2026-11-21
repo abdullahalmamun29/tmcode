@@ -2,6 +2,8 @@
 
 Lightweight, cross-platform VS Code-style terminal code editor for **any language**: open, highlight and run code right in your terminal.
 
+**Website:** https://abdullahalmamun29.github.io/tmcode/
+
 ## Features
 
 - Launch right from any terminal (`tmcode` from `~` opens the Home folder picker; `tmcode` inside any project folder opens it directly)
@@ -21,12 +23,12 @@ One command, no Python needed:
 
 **macOS / Linux**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdullahalmamun29/tmcode/main/install.sh | sh
+curl -fsSL https://abdullahalmamun29.github.io/tmcode/install.sh | sh
 ```
 
 **Windows** (PowerShell)
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/abdullahalmamun29/tmcode/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://abdullahalmamun29.github.io/tmcode/install.ps1 | iex"
 ```
 
 Then open a new terminal and run `tmcode` inside a project folder.

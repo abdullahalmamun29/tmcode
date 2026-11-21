@@ -1,6 +1,6 @@
 # TmCode installer for Windows (PowerShell).
 #
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/abdullahalmamun29/tmcode/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://abdullahalmamun29.github.io/tmcode/install.ps1 | iex"
 #
 # Downloads the prebuilt TmCode from GitHub Releases (no Python needed) into
 # %LOCALAPPDATA%\tmcode and adds it to your user PATH. If that fails, it

@@ -1,7 +1,7 @@
 #!/bin/sh
 # TmCode installer for macOS and Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/abdullahalmamun29/tmcode/main/install.sh | sh
+#   curl -fsSL https://abdullahalmamun29.github.io/tmcode/install.sh | sh
 #
 # Downloads the prebuilt TmCode for this computer from GitHub Releases (no
 # Python needed). If there is no prebuilt file for this system, it installs
