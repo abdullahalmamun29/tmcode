@@ -1,6 +1,6 @@
 """Startup update check, like Codex / Claude Code.
 
-When TmCode starts it asks (at most once a day, in the background) what the
+When TmCode starts it asks (at most every 6 hours, in the background) what the
 latest version is. If it's newer, the app offers: Update now / Skip /
 Skip until next version. "Skip until next version" is remembered in
 update.json next to recent.json, so the prompt only returns for a newer release.
@@ -30,7 +30,7 @@ PYPI_JSON = "https://pypi.org/pypi/tmcode/json"
 INSTALL_SH = f"https://raw.githubusercontent.com/{REPO}/main/install.sh"
 INSTALL_PS1 = f"https://raw.githubusercontent.com/{REPO}/main/install.ps1"
 
-CHECK_INTERVAL = 24 * 60 * 60  # seconds between network checks
+CHECK_INTERVAL = 6 * 60 * 60  # seconds between network checks (every 6 hours)
 FETCH_TIMEOUT = 3.0
 
 
@@ -159,7 +159,7 @@ def check_for_update(
     fetch: Callable[[InstallKind], str | None] = fetch_latest,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """Return the newer version to offer, or None. Hits the network at most once a day."""
+    """Return the newer version to offer, or None. Hits the network at most every 6 hours."""
     environment = env if env is not None else os.environ
     if kind is InstallKind.SOURCE or environment.get("TMCODE_NO_UPDATE_CHECK"):
         return None

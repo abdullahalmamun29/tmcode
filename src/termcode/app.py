@@ -2940,7 +2940,7 @@ class TermCodeApp(App[None]):
         return default_state_path()
 
     def _check_for_update(self) -> None:
-        """Runs in a thread at startup; network at most once a day, silent on failure."""
+        """Runs in a thread at startup; network at most every 6 hours, silent on failure."""
         latest = check_for_update(__version__, self.install_kind, self._update_state_path())
         if latest:
             self.call_from_thread(self._prompt_update, latest)

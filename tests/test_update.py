@@ -1,4 +1,4 @@
-"""Startup update check: once a day, Skip / Skip until next version."""
+"""Startup update check: every 6 hours, Skip / Skip until next version."""
 
 import json
 from pathlib import Path

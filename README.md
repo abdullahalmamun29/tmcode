@@ -17,7 +17,7 @@ Lightweight, cross-platform VS Code-style terminal code editor for **any languag
 - VS Code editing keys: move/copy lines with `Alt+Up/Down`, `Ctrl+/` comments, `Shift+Delete` cuts the line, `Tab`/`Shift+Tab` indent blocks, `Ctrl+D`, smart `Home` and more (see [Editing keys](#editing-keys-vs-code-style))
 - Compiled programs are kept in a hidden `.tmcode` folder, so running an unchanged file again starts instantly
 - LaTeX: `F5` on a `.tex` file builds the PDF (with `latexmk`, or `pdflatex`/`xelatex`/`lualatex`, or `tectonic`) and opens it. It picks XeLaTeX for `fontspec`/`polyglossia` documents (Bangla, Arabic, CJK...), honors `% !TEX program = ...` and `% !TEX root = ...`, and on a chapter file builds the main document next to it
-- Update prompt on start, like Codex: **Update now**, **Skip**, or **Skip until next version** (checks at most once a day; turn off with `TMCODE_NO_UPDATE_CHECK=1`). `tmcode --update` updates any time
+- Update prompt on start, like Codex: **Update now**, **Skip**, or **Skip until next version** (checks at most every 6 hours; turn off with `TMCODE_NO_UPDATE_CHECK=1`). `tmcode --update` updates any time
 - Real OS clipboard integration (Linux X11/Wayland, macOS, Windows), `Ctrl+A` select-all, and VS Code-style `Ctrl+C` (copies selection or current line)
 - Searchable `/` command menu (`Ctrl+K` anywhere, or `/` outside text inputs) with a shortcut for every action
 
